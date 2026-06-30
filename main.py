@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import csv
 import importlib
-import re
 import subprocess
 import sys
 import tkinter as tk
@@ -21,12 +19,11 @@ try:
 except ModuleNotFoundError:
     Sheet = None
 
+import data_utils
+import frame_tools
+
 
 VIRTUAL_VIEW_ROWS = 200
-FULL_RENDER_ROW_LIMIT = 5000
-MOUSE_WHEEL_ROWS = 20
-AUTO_SPLIT_DELIMITERS = [",", ";", "\t", "|"]
-AUTO_SPLIT_MIN_RATIO = 0.6
 ZOOM_MIN = 0.5
 ZOOM_MAX = 2.0
 ZOOM_STEP = 0.1
@@ -63,7 +60,7 @@ class DataAnalysisApp(tk.Tk):
 
         toolbar = ttk.Frame(self, padding=(12, 12, 12, 8))
         toolbar.grid(row=0, column=0, sticky="ew")
-        toolbar.columnconfigure(9, weight=1)
+        toolbar.columnconfigure(10, weight=1)
 
         ttk.Button(toolbar, text="Load Data", command=self.load_data).grid(
             row=0, column=0, padx=(0, 8)
@@ -76,26 +73,29 @@ class DataAnalysisApp(tk.Tk):
             text="Average Selected Columns",
             command=self.average_selected_columns,
         ).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(toolbar, text="Undo", command=self.undo_last_action).grid(
+        ttk.Button(toolbar, text="Frame Total Time", command=self.generate_frame_time_column).grid(
             row=0, column=3, padx=(0, 8)
         )
+        ttk.Button(toolbar, text="Undo", command=self.undo_last_action).grid(
+            row=0, column=4, padx=(0, 8)
+        )
         ttk.Button(toolbar, text="Install Dependencies", command=self.install_dependencies).grid(
-            row=0, column=4, padx=(0, 12)
+            row=0, column=5, padx=(0, 12)
         )
         ttk.Button(toolbar, text="Zoom -", command=lambda: self._change_zoom(-ZOOM_STEP)).grid(
-            row=0, column=5, padx=(0, 6)
+            row=0, column=6, padx=(0, 6)
         )
         self.zoom_label = ttk.Label(toolbar, text="100%")
-        self.zoom_label.grid(row=0, column=6, padx=(0, 6))
+        self.zoom_label.grid(row=0, column=7, padx=(0, 6))
         ttk.Button(toolbar, text="Zoom +", command=lambda: self._change_zoom(ZOOM_STEP)).grid(
-            row=0, column=7, padx=(0, 6)
+            row=0, column=8, padx=(0, 6)
         )
         ttk.Button(toolbar, text="Reset Zoom", command=self._reset_zoom).grid(
-            row=0, column=8, padx=(0, 12)
+            row=0, column=9, padx=(0, 12)
         )
 
         self.file_label = ttk.Label(toolbar, text="No data loaded")
-        self.file_label.grid(row=0, column=9, sticky="w")
+        self.file_label.grid(row=0, column=10, sticky="w")
 
         content = ttk.Frame(self, padding=(12, 0, 12, 12))
         content.grid(row=1, column=0, sticky="nsew")
@@ -241,6 +241,7 @@ class DataAnalysisApp(tk.Tk):
             messagebox.showwarning("No Data", "Please click \"Load Data\" first.")
             return
 
+        self._commit_average_column_name_edit()
         self._sync_sheet_selection()
         if not self.selected_columns:
             messagebox.showwarning(
@@ -286,11 +287,59 @@ class DataAnalysisApp(tk.Tk):
         self._show_data_table()
         self._activate_average_first_cell(insert_at)
 
+    def generate_frame_time_column(self) -> None:
+        if not self._ensure_dependencies():
+            return
+
+        if self.data is None:
+            messagebox.showwarning("No Data", "Please click \"Load Data\" first.")
+            return
+
+        image_column_index = frame_tools.find_image_column_index(self.data)
+        if image_column_index is None:
+            messagebox.showwarning(
+                "Missing Image Column",
+                "Could not find an Image column in the loaded data.",
+            )
+            return
+
+        measuring_time_column_index = frame_tools.find_measuring_time_column_index(self.data)
+        if measuring_time_column_index is None:
+            messagebox.showwarning(
+                "Missing Measuring Time Column",
+                "Could not find the Measuring time [s] column in the loaded data.",
+            )
+            return
+
+        image_column_name = str(self.data.columns[image_column_index])
+        try:
+            result = frame_tools.build_unique_frame_total_time_column(
+                self.data,
+                image_column_index,
+                measuring_time_column_index,
+                existing_names={str(column) for column in self.data.columns},
+            )
+        except ValueError as exc:
+            messagebox.showwarning("No Frame Data", str(exc))
+            return
+
+        insert_at = image_column_index + 1
+        self._save_undo_snapshot()
+        self.data.insert(
+            insert_at,
+            result.column_name,
+            result.values,
+            allow_duplicates=True,
+        )
+        self.load_note = f"Inserted '{result.column_name}' after '{image_column_name}'. {result.note}"
+        self._show_data_table()
+
     def undo_last_action(self) -> None:
         if not self.undo_stack:
             messagebox.showinfo("Nothing to Undo", "There is no previous calculation to undo.")
             return
 
+        self._commit_average_column_name_edit()
         snapshot = self.undo_stack.pop()
         self.data = snapshot["data"]
         self.load_note = snapshot["load_note"]
@@ -320,6 +369,7 @@ class DataAnalysisApp(tk.Tk):
         if self.data is None:
             return
 
+        self._commit_average_column_name_edit()
         self.undo_stack.append({
             "data": self.data.copy(deep=True),
             "load_note": self.load_note,
@@ -378,73 +428,10 @@ class DataAnalysisApp(tk.Tk):
         )
 
     def _read_file(self, path: Path):
-        if pd is None:
-            raise RuntimeError("Missing pandas dependency. Run: pip install -r requirements.txt")
-
-        self.load_note = ""
-        self.source_data_rows = None
-        suffix = path.suffix.lower()
-        if suffix == ".csv":
-            data = self._read_csv_file(path)
-            return self._clean_column_names(self._auto_split_single_column(data))
-        if suffix in {".xlsx", ".xls"}:
-            data = pd.read_excel(path)
-            return self._clean_column_names(self._auto_split_single_column(data))
-        raise ValueError("Only CSV, XLSX, and XLS files are supported.")
-
-    def _read_csv_file(self, path: Path):
-        self.load_note = ""
-        text_lines = self._read_text_lines(path)
-        expected_data_rows = max(len(text_lines) - 1, 0)
-        self.source_data_rows = expected_data_rows
-        attempts = [
-            {"sep": None, "engine": "python"},
-            {"sep": ",", "engine": "python"},
-        ]
-
-        last_error = None
-        for options in attempts:
-            try:
-                data = pd.read_csv(path, **options)
-                if self._csv_row_count_is_valid(data, expected_data_rows):
-                    return data
-                last_error = RuntimeError(
-                    f"Parsed only {len(data)} rows from {expected_data_rows} expected data rows."
-                )
-            except Exception as exc:
-                last_error = exc
-
-        try:
-            self.load_note = (
-                "CSV parser fallback was used because the parsed row count did not match "
-                f"the file line count ({expected_data_rows} expected data rows). "
-                "Loaded each line as one column before auto-splitting."
-            )
-            if not text_lines:
-                return pd.DataFrame()
-            return pd.DataFrame({text_lines[0]: text_lines[1:]})
-        except Exception as fallback_error:
-            raise RuntimeError(
-                "Unable to read CSV with automatic, comma, or raw-line parsing. "
-                f"Last error: {last_error}; fallback error: {fallback_error}"
-            ) from fallback_error
-
-    def _csv_row_count_is_valid(self, data, expected_data_rows: int) -> bool:
-        if expected_data_rows <= 0:
-            return True
-
-        missing_rows = expected_data_rows - len(data)
-        tolerance = max(3, round(expected_data_rows * 0.02))
-        return missing_rows <= tolerance
-
-    def _read_text_lines(self, path: Path) -> list[str]:
-        for encoding in ("utf-8-sig", "utf-8", "gbk", "latin1"):
-            try:
-                return path.read_text(encoding=encoding).splitlines()
-            except UnicodeDecodeError:
-                continue
-
-        return path.read_text(errors="replace").splitlines()
+        data, load_note, source_rows = data_utils.read_and_prepare_data(path)
+        self.load_note = load_note
+        self.source_data_rows = source_rows
+        return data
 
     def _ensure_dependencies(self) -> bool:
         self._load_pandas()
@@ -540,123 +527,10 @@ class DataAnalysisApp(tk.Tk):
         sheet.bind("<Control-Z>", lambda event: self._undo_from_event())
         return sheet
 
-    def _auto_split_single_column(self, data):
-        existing_note = self.load_note
-        if data.shape[1] != 1:
-            return data
-
-        column_name = str(data.columns[0])
-        values = data.iloc[:, 0].dropna().astype(str)
-        sample = [column_name, *values.head(200).tolist()]
-        split_rule = self._detect_split_rule(sample)
-        if split_rule is None:
-            return data
-
-        delimiter, expected_columns = split_rule
-        parsed_rows = [
-            self._split_cell(value, delimiter, expected_columns)
-            for value in data.iloc[:, 0].map(self._format_cell)
-        ]
-
-        header_values = self._split_cell(column_name, delimiter, expected_columns)
-        if len(header_values) == expected_columns and len(set(header_values)) == expected_columns:
-            columns = [value.strip() for value in header_values]
-        else:
-            columns = [""] * expected_columns
-
-        split_note = (
-            f"Auto-split one-column data into {expected_columns} columns "
-            f"using {self._delimiter_label(delimiter)}."
-        )
-        self.load_note = f"{existing_note}\n{split_note}" if existing_note else split_note
-        return pd.DataFrame(parsed_rows, columns=columns)
-
-    def _clean_column_names(self, data):
-        cleaned_columns = []
-        for column in data.columns:
-            column_name = "" if column is None else str(column).strip()
-            if re.fullmatch(r"Unnamed:\s*\d+(?:_level_\d+)?", column_name):
-                column_name = ""
-            cleaned_columns.append(column_name)
-
-        data = data.copy()
-        data.columns = cleaned_columns
-        return data
-
-    def _detect_split_rule(self, sample: list[str]) -> tuple[str, int] | None:
-        best_rule = None
-        best_score = 0
-
-        for delimiter in AUTO_SPLIT_DELIMITERS:
-            counts = [
-                len(self._split_cell(value, delimiter))
-                for value in sample
-                if delimiter in value
-            ]
-            rule = self._score_split_counts(delimiter, counts, len(sample))
-            if rule and rule[2] > best_score:
-                best_rule = (rule[0], rule[1])
-                best_score = rule[2]
-
-        if best_rule is not None:
-            return best_rule
-
-        whitespace_counts = [
-            len(re.split(r"\s+", value.strip()))
-            for value in sample
-            if re.search(r"\s{2,}|\t", value.strip())
-        ]
-        rule = self._score_split_counts("whitespace", whitespace_counts, len(sample))
-        if rule:
-            return rule[0], rule[1]
-
-        return None
-
-    def _score_split_counts(
-        self, delimiter: str, counts: list[int], sample_size: int
-    ) -> tuple[str, int, int] | None:
-        valid_counts = [count for count in counts if count > 1]
-        if not valid_counts:
-            return None
-
-        expected_columns = max(valid_counts)
-        matching_count = valid_counts.count(expected_columns)
-        split_ratio = len(valid_counts) / max(sample_size, 1)
-        if sample_size > 3 and split_ratio < AUTO_SPLIT_MIN_RATIO:
-            return None
-
-        return delimiter, expected_columns, len(valid_counts) * expected_columns
-
-    def _split_cell(
-        self, value: str, delimiter: str, expected_columns: int | None = None
-    ) -> list[str]:
-        text = str(value)
-        if delimiter == "whitespace":
-            parts = re.split(r"\s+", text.strip()) if text.strip() else [""]
-        else:
-            parts = next(csv.reader([text], delimiter=delimiter))
-
-        cleaned_parts = [part.strip() for part in parts]
-        if expected_columns is None:
-            return cleaned_parts
-
-        if len(cleaned_parts) < expected_columns:
-            return [*cleaned_parts, *([""] * (expected_columns - len(cleaned_parts)))]
-        return cleaned_parts
-
-    def _delimiter_label(self, delimiter: str) -> str:
-        labels = {
-            ",": "comma delimiter",
-            ";": "semicolon delimiter",
-            "\t": "tab delimiter",
-            "|": "pipe delimiter",
-            "whitespace": "whitespace delimiter",
-        }
-        return labels.get(delimiter, f"{delimiter!r} delimiter")
-
     def _show_data_table(self, keep_selection: bool = False) -> None:
         if self.data is None:
             return
+        self._commit_average_column_name_edit()
         if self.sheet is None:
             self._load_tksheet()
             self.sheet = self._create_sheet()
@@ -713,7 +587,7 @@ class DataAnalysisApp(tk.Tk):
         )
         self.sheet.headers(headers, reset_col_positions=False)
         self.sheet.row_index(row_index, reset_row_positions=False)
-        self.sheet.set_all_column_widths(width=self._scale_size(110), redraw=False)
+        self._apply_content_column_widths(redraw=False)
         self.sheet.set_all_row_heights(height=self._scale_size(24), redraw=False)
         self.sheet.redraw()
 
@@ -773,6 +647,32 @@ class DataAnalysisApp(tk.Tk):
 
         self.sheet.readonly_cells(cells=[(row, column)], readonly=False, redraw=False)
         self.sheet.redraw()
+
+    def _commit_average_column_name_edit(self) -> None:
+        if self.sheet is None or self.data is None or self.average_editable_cell is None:
+            return
+
+        row, column = self.average_editable_cell
+        if row != 0 or not (0 <= row < len(self.data)) or not (0 <= column < len(self.data.columns)):
+            return
+
+        try:
+            edited_value = self.sheet.get_cell_data(row, column)
+        except Exception:
+            return
+
+        edited_name = str(edited_value).strip()
+        if not edited_name:
+            return
+
+        current_cell_value = self._format_cell(self.data.iat[row, column]).strip()
+        if edited_name == current_cell_value:
+            return
+
+        current_columns = list(self.data.columns)
+        current_columns[column] = edited_name
+        self.data.columns = current_columns
+        self.data.iat[row, column] = edited_name
 
     def _on_sheet_double_click(self, event: tk.Event) -> str | None:
         if self.sheet is None or self.data is None or self.average_editable_cell is None:
@@ -951,13 +851,13 @@ class DataAnalysisApp(tk.Tk):
                 redraw=False,
             )
             self.sheet.set_all_row_heights(height=row_height, redraw=False)
-            self.sheet.set_all_column_widths(width=self._scale_size(110), redraw=True)
+            self._apply_content_column_widths(redraw=True)
 
     def _refresh_table_column_widths(self) -> None:
         if self.data is None or self.sheet is None:
             return
 
-        self.sheet.set_all_column_widths(width=self._scale_size(110), redraw=True)
+        self._apply_content_column_widths(redraw=True)
 
     def _move_table(self, delta: int) -> str:
         return ""
@@ -971,12 +871,11 @@ class DataAnalysisApp(tk.Tk):
             return 0
         return max(len(self.data) - VIRTUAL_VIEW_ROWS, 0)
 
-    def _calculate_column_width(self, series, column_name: str) -> int:
-        sample_values = series.head(100).map(self._format_cell).tolist()
-        sample_values.append(column_name)
-        max_length = max((len(value) for value in sample_values), default=len(column_name))
-        base_width = min(max(max_length * 8 + 24, 100), 320)
-        return self._scale_size(base_width)
+    def _apply_content_column_widths(self, redraw: bool = False) -> None:
+        if self.data is None or self.sheet is None:
+            return
+
+        self.sheet.set_all_column_widths(width=None, redraw=redraw)
 
     def _scale_size(self, value: int) -> int:
         return max(1, round(value * self.zoom_scale))
