@@ -20,6 +20,8 @@ except ModuleNotFoundError:
     Sheet = None
 
 import data_utils
+from average_values import AverageValuesManager
+from chart_window import AverageValuesChartPanel
 import frame_tools
 
 
@@ -51,6 +53,13 @@ class DataAnalysisApp(tk.Tk):
         self.full_render_mode = False
         self.zoom_scale = 1.0
         self.average_editable_cell: tuple[int, int] | None = None
+        self.last_frame_total_column_name: str | None = None
+        self.average_values_data: list[list[str]] = []
+        self.average_values_headers: list[str] = []
+        self.average_sheet_context_menu: tk.Menu | None = None
+        self.average_sheet_context_target: dict[str, int | None] = {"row": None, "column": None}
+        self.average_values_manager: AverageValuesManager | None = None
+        self.average_sheet = None
 
         self._build_ui()
 
@@ -73,9 +82,29 @@ class DataAnalysisApp(tk.Tk):
             text="Average Selected Columns",
             command=self.average_selected_columns,
         ).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(
+            toolbar,
+            text="Import to Average Values",
+            command=self.import_average_values,
+        ).grid(row=1, column=2, padx=(0, 8), pady=(4, 0))
         ttk.Button(toolbar, text="Frame Total Time", command=self.generate_frame_time_column).grid(
             row=0, column=3, padx=(0, 8)
         )
+        ttk.Button(
+            toolbar,
+            text="Import Frame Total",
+            command=self.import_frame_total_to_average_values,
+        ).grid(row=1, column=3, padx=(0, 8), pady=(4, 0))
+        ttk.Button(
+            toolbar,
+            text="Export Average Values",
+            command=self.export_average_values,
+        ).grid(row=1, column=4, padx=(0, 8), pady=(4, 0))
+        ttk.Button(
+            toolbar,
+            text="Plot Curves",
+            command=self.show_curve_plot_tab,
+        ).grid(row=1, column=5, padx=(0, 8), pady=(4, 0))
         ttk.Button(toolbar, text="Undo", command=self.undo_last_action).grid(
             row=0, column=4, padx=(0, 8)
         )
@@ -106,18 +135,30 @@ class DataAnalysisApp(tk.Tk):
         self.notebook.grid(row=0, column=0, sticky="nsew")
 
         self.table_frame = ttk.Frame(self.notebook)
+        self.average_frame = ttk.Frame(self.notebook)
+        self.plot_frame = ttk.Frame(self.notebook)
         self.report_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.table_frame, text="Data Table")
+        self.notebook.add(self.average_frame, text="Average Values")
+        self.notebook.add(self.plot_frame, text="Curve Plot")
         self.notebook.add(self.report_frame, text="Report")
 
         self.table_frame.columnconfigure(0, weight=1)
         self.table_frame.rowconfigure(0, weight=1)
+        self.average_frame.columnconfigure(0, weight=1)
+        self.average_frame.rowconfigure(0, weight=0)
+        self.average_frame.rowconfigure(1, weight=1)
+        self.plot_frame.columnconfigure(0, weight=1)
+        self.plot_frame.rowconfigure(0, weight=1)
         self.report_frame.columnconfigure(0, weight=1)
         self.report_frame.rowconfigure(0, weight=1)
 
         self.style = ttk.Style(self)
         self.report_font = font.Font(family="Consolas", size=10)
         self.sheet = self._create_sheet()
+        self.average_values_manager = AverageValuesManager(self, self.average_frame)
+        self.plot_panel = AverageValuesChartPanel(self.plot_frame, refresh_callback=self.update_curve_plot)
+        self.plot_panel.grid(row=0, column=0, sticky="nsew")
 
         self.output = tk.Text(self.report_frame, wrap="none", font=self.report_font)
         self.output.grid(row=0, column=0, sticky="nsew")
@@ -170,6 +211,7 @@ class DataAnalysisApp(tk.Tk):
         self.undo_stack.clear()
         self.average_columns.clear()
         self.average_editable_cell = None
+        self.last_frame_total_column_name = None
         self.file_label.configure(text=f"Current file: {path.name}")
         self._show_data_table()
 
@@ -271,10 +313,11 @@ class DataAnalysisApp(tk.Tk):
         insert_at = max(selected_indexes) + 1
         column_name = self._next_average_column_name()
         self._save_undo_snapshot()
+        formatted_averages = averages.map(self._format_decimal_places).tolist()
         self.data.insert(
             insert_at,
             column_name,
-            averages.map(self._format_decimal_places),
+            formatted_averages,
             allow_duplicates=True,
         )
         self.average_columns = {index + 1 if index >= insert_at else index for index in self.average_columns}
@@ -284,8 +327,308 @@ class DataAnalysisApp(tk.Tk):
             f"Inserted '{column_name}' at column {insert_at + 1} from "
             f"{len(selected_indexes)} selected columns. Values are rounded to 3 decimal places."
         )
-        self._show_data_table()
+        self._show_data_table(keep_selection=True)
         self._activate_average_first_cell(insert_at)
+        self._write_output(
+            "\n".join(
+                [
+                    "Average Column Generated",
+                    "=" * 80,
+                    self.load_note,
+                ]
+            )
+        )
+
+    def import_average_values(self) -> None:
+        if not self._ensure_dependencies():
+            return
+
+        if self.data is None:
+            messagebox.showwarning("No Data", "Please click \"Load Data\" first.")
+            return
+
+        self._commit_average_column_name_edit()
+        if self.average_values_manager is not None:
+            self._sync_sheet_selection()
+            selected_indexes = self._current_selected_column_indexes()
+            if selected_indexes:
+                self.average_values_manager.import_columns_from_main(
+                    self.data,
+                    selected_indexes,
+                    prepend=False,
+                    select_tab=True,
+                )
+                return
+
+            if not self.average_columns:
+                messagebox.showinfo(
+                    "No Columns Selected",
+                    "Select one or more columns in the Data Table first, or generate average columns first.",
+                )
+                return
+
+            average_indexes = sorted(
+                index for index in self.average_columns if 0 <= index < len(self.data.columns)
+            )
+            if not average_indexes:
+                messagebox.showinfo(
+                    "No Average Columns",
+                    "Please calculate average columns in the Data Table first.",
+                )
+                return
+
+            self.average_values_manager.import_columns_from_main(
+                self.data,
+                average_indexes,
+                prepend=False,
+                select_tab=True,
+            )
+
+    def _current_selected_column_indexes(self) -> list[int]:
+        if self.data is None:
+            return []
+
+        current: set[int] = set()
+        if self.sheet is not None:
+            try:
+                selected_columns = self.sheet.MT.get_selected_cols() if hasattr(self.sheet, "MT") else self.sheet.get_selected_columns()
+                current |= {
+                    data_index
+                    for index in selected_columns
+                    if isinstance(index, int)
+                    for data_index in [self._sheet_column_to_data_index(index)]
+                    if data_index is not None
+                }
+            except Exception:
+                pass
+
+            if not current:
+                try:
+                    selected_cells = self.sheet.MT.get_selected_cells(get_cols=True) if hasattr(self.sheet, "MT") else self.sheet.get_selected_cells(get_cols=True)
+                    current |= {
+                        data_index
+                        for _, column in selected_cells
+                        if isinstance(column, int)
+                        for data_index in [self._sheet_column_to_data_index(column)]
+                        if data_index is not None
+                    }
+                except Exception:
+                    pass
+
+            if not current:
+                try:
+                    selection_items = self.sheet.MT.get_selection_items(cells=False, rows=False, columns=True) if hasattr(self.sheet, "MT") else ()
+                    for _, box in selection_items:
+                        for sheet_column in range(box.coords.from_c, box.coords.upto_c):
+                            data_index = self._sheet_column_to_data_index(sheet_column)
+                            if data_index is not None:
+                                current.add(data_index)
+                except Exception:
+                    pass
+
+        if not current:
+            current = set(self.selected_columns)
+
+        return sorted(index for index in current if 0 <= index < len(self.data.columns))
+
+    def _sheet_column_to_data_index(self, sheet_column: int) -> int | None:
+        if sheet_column < 0:
+            return None
+        data_index = sheet_column
+        if self.data is None or not (0 <= data_index < len(self.data.columns)):
+            return None
+        return data_index
+
+    def import_frame_total_to_average_values(self) -> None:
+        if not self._ensure_dependencies():
+            return
+
+        if self.data is None:
+            messagebox.showwarning("No Data", "Please click \"Load Data\" first.")
+            return
+
+        column_name = self.last_frame_total_column_name
+        if not column_name or column_name not in self.data.columns:
+            candidates = [str(column) for column in self.data.columns if str(column).startswith("Unique_Frame_Total_Time_s")]
+            if not candidates:
+                messagebox.showinfo(
+                    "No Frame Total Column",
+                    "Please generate the Frame Total Time column first.",
+                )
+                return
+            column_name = candidates[0]
+            self.last_frame_total_column_name = column_name
+
+        if self.average_values_manager is not None:
+            self.average_values_manager.import_frame_total_column(
+                self.data,
+                column_name,
+                select_tab=True,
+            )
+
+    def export_average_values(self) -> None:
+        if not self._ensure_dependencies():
+            return
+
+        if self.average_values_manager is None:
+            messagebox.showinfo("No Data", "Average Values is not ready yet.")
+            return
+
+        self.average_values_manager.export_data()
+
+    def show_curve_plot_tab(self) -> None:
+        if hasattr(self, "notebook"):
+            self.notebook.select(self.plot_frame)
+        self.update_curve_plot()
+
+    def update_curve_plot(
+        self,
+        data: list[list[str]] | None = None,
+        headers: list[str] | None = None,
+    ) -> None:
+        if not hasattr(self, "plot_panel"):
+            return
+
+        if data is None or headers is None:
+            data, headers = self._average_plot_table()
+            if not data or not headers:
+                self.plot_panel.clear()
+                return
+        else:
+            data = [list(row) for row in data]
+            headers = self._clean_plot_headers(headers, data)
+
+        if data and headers:
+            selected_columns = self._average_plot_selected_columns(len(headers))
+
+            if selected_columns:
+                x_index = 0
+                for index in selected_columns:
+                    if index < len(headers) and "time" in str(headers[index]).lower():
+                        x_index = index
+                        break
+                y_indexes = [
+                    index
+                    for index in selected_columns
+                    if index != x_index and 0 <= index < len(headers)
+                ]
+                if not y_indexes:
+                    y_indexes = [index for index in range(len(headers)) if index != x_index]
+                keep_indexes = [x_index] + y_indexes
+                unique_indexes: list[int] = []
+                for index in keep_indexes:
+                    if index not in unique_indexes and index < len(headers):
+                        unique_indexes.append(index)
+                filtered_headers = [headers[index] for index in unique_indexes]
+                filtered_data = [
+                    [row[index] if index < len(row) else "" for index in unique_indexes]
+                    for row in data
+                ]
+                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:])
+            else:
+                self.plot_panel.set_table(data, headers, selected_y_names=headers[1:])
+        else:
+            self.plot_panel.clear()
+
+    def _average_plot_table(self) -> tuple[list[list[str]], list[str]]:
+        if self.average_values_manager is None:
+            return [], []
+
+        manager = self.average_values_manager
+        try:
+            manager._sync_cache_from_sheet()
+        except Exception:
+            pass
+
+        data = [list(row) for row in getattr(manager, "data", [])]
+        headers = list(getattr(manager, "headers", []))
+        sheet = getattr(manager, "sheet", None)
+
+        if sheet is not None:
+            try:
+                sheet_data = sheet.get_sheet_data()
+                if sheet_data and not manager._is_placeholder_data(sheet_data):
+                    data = [list(row) for row in sheet_data]
+            except Exception:
+                pass
+
+            try:
+                sheet_headers = list(sheet.headers())
+                if sheet_headers:
+                    headers = [str(value) for value in sheet_headers]
+            except Exception:
+                pass
+
+        return data, self._clean_plot_headers(headers, data)
+
+    def _clean_plot_headers(self, headers: list[str], data: list[list[str]]) -> list[str]:
+        column_count = max([len(headers), *(len(row) for row in data)] or [0])
+        cleaned: list[str] = []
+        for index in range(column_count):
+            raw = str(headers[index]).strip() if index < len(headers) else ""
+            cleaned.append(raw or f"Column {index + 1}")
+        return cleaned
+
+    def _average_plot_selected_columns(self, column_count: int) -> list[int]:
+        sheet = None
+        if self.average_values_manager is not None:
+            sheet = getattr(self.average_values_manager, "sheet", None)
+        if sheet is None:
+            sheet = self.average_sheet
+        if sheet is None:
+            return []
+
+        selected: set[int] = set()
+
+        for getter in (
+            lambda: sheet.get_selected_columns(),
+            lambda: sheet.MT.get_selected_cols() if hasattr(sheet, "MT") else [],
+        ):
+            try:
+                selected.update(index for index in getter() if isinstance(index, int))
+            except Exception:
+                pass
+
+        for getter in (
+            lambda: sheet.get_selected_cells(get_cols=True),
+            lambda: sheet.MT.get_selected_cells(get_cols=True) if hasattr(sheet, "MT") else [],
+        ):
+            try:
+                for item in getter():
+                    if isinstance(item, int):
+                        selected.add(item)
+                    elif isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], int):
+                        selected.add(item[1])
+            except Exception:
+                pass
+
+        try:
+            selection_items = sheet.MT.get_selection_items(cells=True, rows=False, columns=True) if hasattr(sheet, "MT") else ()
+            for _, box in selection_items:
+                coords = getattr(box, "coords", None)
+                if coords is None:
+                    continue
+                for column in range(getattr(coords, "from_c", 0), getattr(coords, "upto_c", 0)):
+                    selected.add(column)
+        except Exception:
+            pass
+
+        for getter in (
+            lambda: sheet.get_all_selection_boxes(),
+            lambda: sheet.MT.get_all_selection_boxes() if hasattr(sheet, "MT") else [],
+        ):
+            try:
+                for box in getter():
+                    coords = getattr(box, "coords", box)
+                    from_c = getattr(coords, "from_c", None)
+                    upto_c = getattr(coords, "upto_c", None)
+                    if from_c is not None and upto_c is not None:
+                        for column in range(from_c, upto_c):
+                            selected.add(column)
+            except Exception:
+                pass
+
+        return sorted(index for index in selected if 0 <= index < column_count)
 
     def generate_frame_time_column(self) -> None:
         if not self._ensure_dependencies():
@@ -331,8 +674,24 @@ class DataAnalysisApp(tk.Tk):
             result.values,
             allow_duplicates=True,
         )
+        self.last_frame_total_column_name = result.column_name
         self.load_note = f"Inserted '{result.column_name}' after '{image_column_name}'. {result.note}"
-        self._show_data_table()
+        if self.selected_columns:
+            self.selected_columns = {
+                index + 1 if index >= insert_at else index for index in self.selected_columns
+            }
+        if self.sheet is not None:
+            self._insert_sheet_column(insert_at, result.column_name, result.values)
+            self._apply_sheet_highlights()
+        self._write_output(
+            "\n".join(
+                [
+                    "Frame Total Time Generated",
+                    "=" * 80,
+                    self.load_note,
+                ]
+            )
+        )
 
     def undo_last_action(self) -> None:
         if not self.undo_stack:
@@ -348,6 +707,7 @@ class DataAnalysisApp(tk.Tk):
         self.average_columns = set(snapshot["average_columns"])
         self.average_editable_cell = snapshot.get("average_editable_cell")
         self.table_offset = snapshot["table_offset"]
+        self.last_frame_total_column_name = snapshot.get("last_frame_total_column_name")
 
         self._show_data_table(keep_selection=True)
         self._write_output(
@@ -378,6 +738,7 @@ class DataAnalysisApp(tk.Tk):
             "average_columns": set(self.average_columns),
             "average_editable_cell": self.average_editable_cell,
             "table_offset": self.table_offset,
+            "last_frame_total_column_name": self.last_frame_total_column_name,
         })
         if len(self.undo_stack) > UNDO_LIMIT:
             self.undo_stack.pop(0)
@@ -480,17 +841,25 @@ class DataAnalysisApp(tk.Tk):
         else:
             Sheet = LoadedSheet
 
-    def _create_sheet(self):
+    def _create_sheet(
+        self,
+        parent: ttk.Frame | None = None,
+        bind_selection_sync: bool = True,
+        enable_editing: bool = False,
+        bind_app_shortcuts: bool = True,
+        use_custom_double_click: bool = True,
+    ):
+        target_parent = parent or self.table_frame
         if Sheet is None:
             label = ttk.Label(
-                self.table_frame,
+                target_parent,
                 text="Missing tksheet dependency. Click Install Dependencies.",
             )
             label.grid(row=0, column=0, sticky="nsew")
             return None
 
         sheet = Sheet(
-            self.table_frame,
+            target_parent,
             data=[],
             headers=[],
             row_index=[],
@@ -510,22 +879,39 @@ class DataAnalysisApp(tk.Tk):
             index_selected_rows_fg="#FFFFFF",
         )
         sheet.grid(row=0, column=0, sticky="nsew")
-        sheet.enable_bindings(
-            "single_select",
-            "drag_select",
-            "column_select",
-            "row_select",
-            "arrowkeys",
-            "copy",
-            "rc_select",
-        )
-        sheet.bind("<ButtonRelease-1>", self._sync_sheet_selection_later)
-        sheet.bind("<KeyRelease>", self._sync_sheet_selection_later)
-        sheet.bind("<Double-Button-1>", self._on_sheet_double_click, add="+")
+        sheet.enable_bindings("single_select", "drag_select", "column_select", "row_select", "arrowkeys", "copy", "rc_select")
+        if enable_editing:
+            sheet.enable_bindings("edit")
+        if bind_selection_sync:
+            sheet.bind("<ButtonRelease-1>", self._sync_sheet_selection_later)
+            sheet.bind("<KeyRelease>", self._sync_sheet_selection_later)
+        if use_custom_double_click:
+            sheet.bind("<Double-Button-1>", self._on_sheet_double_click, add="+")
         sheet.bind("<Control-MouseWheel>", self._on_zoom_mousewheel)
-        sheet.bind("<Control-z>", lambda event: self._undo_from_event())
-        sheet.bind("<Control-Z>", lambda event: self._undo_from_event())
+        if bind_app_shortcuts:
+            sheet.bind("<Control-z>", lambda event: self._undo_from_event())
+            sheet.bind("<Control-Z>", lambda event: self._undo_from_event())
         return sheet
+
+    def _bind_average_sheet_actions(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        self.average_sheet.bind("<Double-Button-1>", self._on_average_sheet_double_click, add="+")
+        self.average_sheet.bind("<Delete>", self._on_average_sheet_delete_key, add="+")
+        self.average_sheet.bind("<BackSpace>", self._on_average_sheet_delete_key, add="+")
+        self.average_sheet.bind("<Control-a>", self._on_average_sheet_select_all, add="+")
+        self.average_sheet.bind("<Control-A>", self._on_average_sheet_select_all, add="+")
+        self.average_sheet.bind("<Button-3>", self._on_average_sheet_right_click, add="+")
+        self.average_sheet.bind("<Button-2>", self._on_average_sheet_right_click, add="+")
+
+    def _build_average_sheet_context_menu(self) -> None:
+        self.average_sheet_context_menu = tk.Menu(self, tearoff=0)
+        self.average_sheet_context_menu.add_command(label="Add Row", command=self._average_menu_add_row)
+        self.average_sheet_context_menu.add_command(label="Delete Row", command=self._average_menu_delete_row)
+        self.average_sheet_context_menu.add_separator()
+        self.average_sheet_context_menu.add_command(label="Add Column", command=self._average_menu_add_column)
+        self.average_sheet_context_menu.add_command(label="Delete Column", command=self._average_menu_delete_column)
 
     def _show_data_table(self, keep_selection: bool = False) -> None:
         if self.data is None:
@@ -720,9 +1106,11 @@ class DataAnalysisApp(tk.Tk):
         if self.sheet is None or self.data is None:
             return
 
-        selected_columns = set(self.sheet.get_selected_columns())
-        selected_rows = set(self.sheet.get_selected_rows())
-        selected_columns = {index for index in selected_columns if 0 <= index < len(self.data.columns)}
+        selected_columns = set(self._current_selected_column_indexes())
+        try:
+            selected_rows = set(self.sheet.get_selected_rows())
+        except Exception:
+            selected_rows = set()
         selected_rows = {index for index in selected_rows if 0 <= index < len(self.data)}
         if not selected_columns and not selected_rows:
             return
@@ -853,6 +1241,9 @@ class DataAnalysisApp(tk.Tk):
             self.sheet.set_all_row_heights(height=row_height, redraw=False)
             self._apply_content_column_widths(redraw=True)
 
+        if self.average_values_manager is not None:
+            self.average_values_manager.apply_zoom(table_size, row_height)
+
     def _refresh_table_column_widths(self) -> None:
         if self.data is None or self.sheet is None:
             return
@@ -875,7 +1266,425 @@ class DataAnalysisApp(tk.Tk):
         if self.data is None or self.sheet is None:
             return
 
-        self.sheet.set_all_column_widths(width=None, redraw=redraw)
+        try:
+            column_count = len(self.data.columns)
+            widths = []
+            for index in range(column_count):
+                text_width = self.sheet.get_column_text_width(index, visible_only=True)
+                widths.append(min(max(text_width + 18, 80), 360))
+            if widths:
+                self.sheet.set_column_widths(widths)
+        except Exception:
+            self.sheet.set_all_column_widths(width=None, redraw=False)
+
+        if redraw:
+            self.sheet.redraw()
+
+    def _insert_sheet_column(self, index: int, header: str, values: list[object]) -> None:
+        if self.sheet is None:
+            return
+
+        payload = [header, *values]
+        try:
+            self.sheet.insert_columns(
+                columns=[payload],
+                idx=index,
+                headers=True,
+                fill=True,
+                undo=False,
+                emit_event=False,
+                create_selections=False,
+                add_row_heights=False,
+                push_ops=False,
+                redraw=False,
+            )
+            try:
+                text_width = self.sheet.get_column_text_width(index, visible_only=True)
+                self.sheet.column_width(index, width=min(max(text_width + 18, 80), 360), redraw=False)
+            except Exception:
+                pass
+            self.sheet.redraw()
+        except Exception:
+            self._show_data_table(keep_selection=True)
+
+    def _refresh_average_sheet(self, select_tab: bool = False) -> None:
+        self._render_average_values_sheet(select_tab=select_tab, placeholder=True)
+
+    def _append_main_average_columns_to_average_values(self, select_tab: bool = False) -> None:
+        if self.data is None:
+            return
+
+        average_indexes = sorted(index for index in self.average_columns if 0 <= index < len(self.data.columns))
+        if not average_indexes:
+            messagebox.showinfo(
+                "No Average Columns",
+                "Please calculate average columns in the Data Table first.",
+            )
+            return
+
+        column_names = [str(self.data.columns[index]) for index in average_indexes]
+        self._append_main_columns_to_average_values(column_names, prepend=False, select_tab=select_tab)
+
+    def _append_main_columns_to_average_values(
+        self,
+        column_names: list[str],
+        prepend: bool = False,
+        select_tab: bool = False,
+    ) -> None:
+        if self.data is None or self.average_sheet is None:
+            return
+
+        source_columns = [column for column in column_names if column in self.data.columns]
+        if not source_columns:
+            return
+
+        self._sync_average_values_cache_from_sheet()
+        target_rows = len(self.data)
+        self._ensure_average_values_row_count(target_rows)
+
+        extracted_columns: list[list[str]] = []
+        extracted_headers: list[str] = []
+        for column_name in source_columns:
+            extracted_headers.append(str(column_name))
+            extracted_columns.append(self._extract_average_value_column_values(column_name))
+
+        if not self.average_values_data:
+            self.average_values_data = [[""] * len(extracted_columns) for _ in range(target_rows)]
+            for column_offset, column_values in enumerate(extracted_columns):
+                for row_index, value in enumerate(column_values):
+                    self.average_values_data[row_index][column_offset] = value
+            self.average_values_headers = extracted_headers[:]
+        else:
+            insertion_index = 0 if prepend else len(self.average_values_headers)
+            if not self.average_values_headers:
+                self.average_values_headers = [f"Column {index + 1}" for index in range(len(self.average_values_data[0]) if self.average_values_data else 0)]
+            for header, values in zip(extracted_headers, extracted_columns, strict=False):
+                self._insert_average_value_column(insertion_index, header, values)
+                insertion_index += 1
+
+        self._render_average_values_sheet(select_tab=select_tab)
+
+    def _insert_average_value_column(self, index: int, header: str, values: list[str]) -> None:
+        row_count = max(len(self.average_values_data), len(values))
+        if not self.average_values_data:
+            self.average_values_data = [[""] for _ in range(row_count)]
+        self._ensure_average_values_row_count(row_count)
+        for row_index in range(row_count):
+            value = values[row_index] if row_index < len(values) else ""
+            self.average_values_data[row_index].insert(index, value)
+        self.average_values_headers.insert(index, header)
+
+    def _extract_average_value_column_values(self, column_name: str) -> list[str]:
+        if self.data is None or column_name not in self.data.columns:
+            return []
+
+        values = [self._format_cell(value) for value in self.data[column_name].tolist()]
+        if values and values[0] == str(column_name):
+            values = values[1:]
+        return values
+
+    def _sync_average_values_cache_from_sheet(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        try:
+            sheet_data = self.average_sheet.get_sheet_data()
+        except Exception:
+            return
+
+        if self._is_average_placeholder_data(sheet_data):
+            return
+
+        normalized = [list(row) for row in sheet_data]
+        self._normalize_average_values_rows(normalized)
+        self.average_values_data = normalized
+        if not self.average_values_headers or len(self.average_values_headers) != self._average_values_column_count():
+            self.average_values_headers = [
+                f"Column {index + 1}"
+                for index in range(self._average_values_column_count())
+            ]
+
+    def _ensure_average_values_row_count(self, target_rows: int) -> None:
+        if target_rows <= 0:
+            self.average_values_data = []
+            return
+
+        if not self.average_values_data:
+            column_count = len(self.average_values_headers)
+            self.average_values_data = [[""] * column_count for _ in range(target_rows)]
+            return
+
+        column_count = self._average_values_column_count()
+        for row in self.average_values_data:
+            if len(row) < column_count:
+                row.extend([""] * (column_count - len(row)))
+            elif len(row) > column_count:
+                del row[column_count:]
+
+        current_rows = len(self.average_values_data)
+        if current_rows < target_rows:
+            for _ in range(target_rows - current_rows):
+                self.average_values_data.append([""] * column_count)
+        elif current_rows > target_rows:
+            del self.average_values_data[target_rows:]
+
+    def _normalize_average_values_rows(self, rows: list[list[str]]) -> None:
+        if not rows:
+            return
+
+        column_count = max(len(row) for row in rows)
+        for row in rows:
+            if len(row) < column_count:
+                row.extend([""] * (column_count - len(row)))
+            elif len(row) > column_count:
+                del row[column_count:]
+
+    def _average_values_column_count(self) -> int:
+        if self.average_values_data:
+            return max(len(row) for row in self.average_values_data)
+        return len(self.average_values_headers)
+
+    def _is_average_placeholder_data(self, rows: list[list[str]]) -> bool:
+        if len(rows) != 1 or not rows[0]:
+            return False
+        text = str(rows[0][0]).strip().lower()
+        return text.startswith("load data first") or text.startswith("no average columns")
+
+    def _render_average_values_sheet(self, select_tab: bool = False, placeholder: bool = False) -> None:
+        if self.average_sheet is None:
+            return
+
+        sheet = self.average_sheet
+        if self.average_values_data:
+            data = [list(row) for row in self.average_values_data]
+            headers = self.average_values_headers[:]
+            if not headers:
+                headers = [f"Column {index + 1}" for index in range(len(data[0]))]
+                self.average_values_headers = headers[:]
+        else:
+            if self.data is None or not self.average_columns:
+                note = "Load data first, then generate average columns."
+            else:
+                note = "No average columns have been generated yet."
+            data = [[note]]
+            headers = ["Note"]
+
+        if not data:
+            data = [[""]]
+            headers = ["Note"]
+
+        self._normalize_average_values_rows(data)
+        column_count = max(len(row) for row in data)
+        if not headers or len(headers) != column_count:
+            headers = [
+                headers[index] if index < len(headers) else f"Column {index + 1}"
+                for index in range(column_count)
+            ]
+            self.average_values_headers = headers[:]
+
+        row_index = [str(index) for index in range(1, len(data) + 1)]
+        sheet.set_sheet_data(
+            data,
+            reset_col_positions=True,
+            reset_row_positions=True,
+            reset_highlights=True,
+        )
+        sheet.headers(headers, reset_col_positions=False)
+        sheet.row_index(row_index, reset_row_positions=False)
+        sheet.set_all_column_widths(width=None, redraw=False)
+        sheet.set_all_row_heights(height=self._scale_size(24), redraw=False)
+        sheet.redraw()
+        self.average_values_sheet_ready = bool(self.average_values_data)
+
+        if select_tab:
+            self.notebook.select(self.average_frame)
+
+    def _average_context_selection(self) -> tuple[list[int], list[int]]:
+        if self.average_sheet is None:
+            return [], []
+
+        try:
+            selected_columns = sorted(
+                index for index in self.average_sheet.get_selected_columns() if isinstance(index, int) and index >= 0
+            )
+        except Exception:
+            selected_columns = []
+
+        try:
+            selected_rows = sorted(
+                index for index in self.average_sheet.get_selected_rows() if isinstance(index, int) and index >= 0
+            )
+        except Exception:
+            selected_rows = []
+
+        return selected_columns, selected_rows
+
+    def _on_average_sheet_right_click(self, event: tk.Event) -> str:
+        if self.average_sheet is None or self.average_sheet_context_menu is None:
+            return "break"
+
+        row = self.average_sheet.identify_row(event)
+        column = self.average_sheet.identify_column(event)
+        self.average_sheet_context_target = {"row": row, "column": column}
+
+        try:
+            region = self.average_sheet.identify_region(event)
+            if region == "header" and column is not None:
+                self.average_sheet.select_column(column, redraw=False)
+            elif region == "index" and row is not None:
+                self.average_sheet.select_row(row, redraw=False)
+            elif region == "table" and row is not None and column is not None:
+                self.average_sheet.select_cell(row, column, redraw=False)
+            self.average_sheet.redraw()
+            self.average_sheet_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.average_sheet_context_menu.grab_release()
+        return "break"
+
+    def _average_context_column_index(self) -> int | None:
+        selected_columns, _ = self._average_context_selection()
+        if selected_columns:
+            return selected_columns[-1]
+        return self.average_sheet_context_target.get("column")
+
+    def _average_context_row_index(self) -> int | None:
+        _, selected_rows = self._average_context_selection()
+        if selected_rows:
+            return selected_rows[-1]
+        return self.average_sheet_context_target.get("row")
+
+    def _average_menu_add_column(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        self._sync_average_values_cache_from_sheet()
+        column_index = self._average_context_column_index()
+        if column_index is None:
+            column_index = self._average_values_column_count() - 1
+        insert_at = max(column_index + 1, 0)
+        row_count = len(self.average_values_data)
+        if row_count == 0:
+            self.average_values_data = [[""]]
+            self.average_values_headers = ["Column 1"]
+            self._render_average_values_sheet(select_tab=True)
+            return
+
+        values = [""] * row_count
+        header = self._next_average_sheet_column_name()
+        self._insert_average_value_column(insert_at, header, values)
+        self._render_average_values_sheet(select_tab=True)
+
+    def _average_menu_delete_column(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        self._sync_average_values_cache_from_sheet()
+        selected_columns, _ = self._average_context_selection()
+        if not selected_columns:
+            column_index = self._average_context_column_index()
+            if column_index is None:
+                return
+            selected_columns = [column_index]
+
+        selected_columns = sorted(set(index for index in selected_columns if 0 <= index < self._average_values_column_count()))
+        if not selected_columns:
+            return
+
+        for column_index in reversed(selected_columns):
+            for row in self.average_values_data:
+                if column_index < len(row):
+                    del row[column_index]
+            if column_index < len(self.average_values_headers):
+                del self.average_values_headers[column_index]
+
+        self._render_average_values_sheet(select_tab=True)
+
+    def _average_menu_add_row(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        self._sync_average_values_cache_from_sheet()
+        row_index = self._average_context_row_index()
+        insert_at = len(self.average_values_data) if row_index is None else max(row_index + 1, 0)
+        column_count = self._average_values_column_count()
+        if column_count == 0:
+            column_count = max(len(self.average_values_headers), 1)
+            self.average_values_headers = self.average_values_headers or [self._next_average_sheet_column_name()]
+        self.average_values_data.insert(insert_at, [""] * column_count)
+        self._render_average_values_sheet(select_tab=True)
+
+    def _average_menu_delete_row(self) -> None:
+        if self.average_sheet is None:
+            return
+
+        self._sync_average_values_cache_from_sheet()
+        _, selected_rows = self._average_context_selection()
+        if not selected_rows:
+            row_index = self._average_context_row_index()
+            if row_index is None:
+                return
+            selected_rows = [row_index]
+
+        selected_rows = sorted(set(index for index in selected_rows if 0 <= index < len(self.average_values_data)))
+        if not selected_rows:
+            return
+
+        for row_index in reversed(selected_rows):
+            del self.average_values_data[row_index]
+
+        self._render_average_values_sheet(select_tab=True)
+
+    def _next_average_sheet_column_name(self) -> str:
+        existing = set(self.average_values_headers)
+        suffix = 1
+        while True:
+            candidate = "New Column" if suffix == 1 else f"New Column {suffix}"
+            if candidate not in existing:
+                return candidate
+            suffix += 1
+
+    def _on_average_sheet_double_click(self, event: tk.Event) -> str | None:
+        if self.average_sheet is None:
+            return None
+
+        if self.average_sheet.identify_region(event) != "table":
+            return None
+
+        row = self.average_sheet.identify_row(event)
+        column = self.average_sheet.identify_column(event)
+        if row is None or column is None:
+            return None
+
+        try:
+            self.average_sheet.select_cell(row, column, redraw=False)
+            self.average_sheet.redraw()
+            self.average_sheet.open_cell()
+        except Exception:
+            pass
+        return "break"
+
+    def _on_average_sheet_delete_key(self, event: tk.Event) -> str:
+        if self.average_sheet is None:
+            return "break"
+
+        try:
+            self.average_sheet.delete(event)
+        except Exception:
+            try:
+                self.average_sheet.clear()
+            except Exception:
+                pass
+        return "break"
+
+    def _on_average_sheet_select_all(self, event: tk.Event) -> str:
+        if self.average_sheet is None:
+            return "break"
+
+        try:
+            self.average_sheet.select_all()
+        except Exception:
+            pass
+        return "break"
 
     def _scale_size(self, value: int) -> int:
         return max(1, round(value * self.zoom_scale))

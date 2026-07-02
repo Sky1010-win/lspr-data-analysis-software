@@ -39,58 +39,66 @@ def read_csv_file(path: Path):
         raise RuntimeError("Missing pandas dependency. Run: pip install -r requirements.txt")
 
     load_note = ""
-    text_lines = read_text_lines(path)
-    expected_data_rows = max(len(text_lines) - 1, 0)
-    attempts = [
-        {"sep": None, "engine": "python"},
-        {"sep": ",", "engine": "python"},
-    ]
+    sample_lines = read_text_sample(path)
+    read_kwargs = infer_csv_read_kwargs(sample_lines)
 
     last_error = None
+    attempts = [read_kwargs, {"sep": None, "engine": "python"}, {"sep": ",", "engine": "python"}]
     for options in attempts:
         try:
             data = pd.read_csv(path, **options)
-            if csv_row_count_is_valid(data, expected_data_rows):
-                return data, load_note, expected_data_rows
-            last_error = RuntimeError(
-                f"Parsed only {len(data)} rows from {expected_data_rows} expected data rows."
-            )
+            return data, load_note, len(data)
         except Exception as exc:
             last_error = exc
 
-    try:
-        load_note = (
-            "CSV parser fallback was used because the parsed row count did not match "
-            f"the file line count ({expected_data_rows} expected data rows). "
-            "Loaded each line as one column before auto-splitting."
-        )
-        if not text_lines:
-            return pd.DataFrame(), load_note, expected_data_rows
-        return pd.DataFrame({text_lines[0]: text_lines[1:]}), load_note, expected_data_rows
-    except Exception as fallback_error:
-        raise RuntimeError(
-            "Unable to read CSV with automatic, comma, or raw-line parsing. "
-            f"Last error: {last_error}; fallback error: {fallback_error}"
-        ) from fallback_error
+    raise RuntimeError(f"Unable to read CSV file. Last error: {last_error}")
 
 
-def csv_row_count_is_valid(data, expected_data_rows: int) -> bool:
-    if expected_data_rows <= 0:
-        return True
-
-    missing_rows = expected_data_rows - len(data)
-    tolerance = max(3, round(expected_data_rows * 0.02))
-    return missing_rows <= tolerance
-
-
-def read_text_lines(path: Path) -> list[str]:
+def read_text_sample(path: Path, max_lines: int = 200) -> list[str]:
+    lines: list[str] = []
     for encoding in ("utf-8-sig", "utf-8", "gbk", "latin1"):
         try:
-            return path.read_text(encoding=encoding).splitlines()
+            with path.open("r", encoding=encoding, newline="") as handle:
+                for _ in range(max_lines):
+                    line = handle.readline()
+                    if not line:
+                        break
+                    lines.append(line.rstrip("\r\n"))
+            return lines
         except UnicodeDecodeError:
+            lines.clear()
             continue
 
-    return path.read_text(errors="replace").splitlines()
+    with path.open("r", errors="replace", newline="") as handle:
+        for _ in range(max_lines):
+            line = handle.readline()
+            if not line:
+                break
+            lines.append(line.rstrip("\r\n"))
+    return lines
+
+
+def infer_csv_read_kwargs(sample_lines: list[str]) -> dict[str, object]:
+    non_empty_lines = [line for line in sample_lines if line.strip()]
+    sample_text = "\n".join(non_empty_lines[:50])
+    if not sample_text:
+        return {"sep": None, "engine": "python"}
+
+    try:
+        dialect = csv.Sniffer().sniff(sample_text, delimiters=AUTO_SPLIT_DELIMITERS)
+        delimiter = dialect.delimiter
+        if delimiter == "\t":
+            return {"sep": "\t", "engine": "python"}
+        if delimiter in AUTO_SPLIT_DELIMITERS:
+            return {"sep": delimiter, "engine": "python" if delimiter in {";", "|"} else "c"}
+    except csv.Error:
+        pass
+
+    delimiter = detect_split_rule(non_empty_lines[:50])
+    if delimiter is not None:
+        return {"sep": delimiter[0] if delimiter[0] != "whitespace" else r"\s+", "engine": "python"}
+
+    return {"sep": None, "engine": "python"}
 
 
 def auto_split_single_column(data, existing_note: str = ""):
@@ -138,7 +146,6 @@ def clean_column_names(data):
             column_name = ""
         cleaned_columns.append(column_name)
 
-    data = data.copy()
     data.columns = cleaned_columns
     return data
 
