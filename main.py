@@ -30,6 +30,7 @@ ZOOM_MIN = 0.5
 ZOOM_MAX = 2.0
 ZOOM_STEP = 0.1
 UNDO_LIMIT = 50
+APP_BUTTON_WIDTH = 22
 
 
 class DataAnalysisApp(tk.Tk):
@@ -62,6 +63,15 @@ class DataAnalysisApp(tk.Tk):
         self.average_sheet = None
 
         self._build_ui()
+        self.after(0, self._maximize_window)
+
+    def _maximize_window(self) -> None:
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            screen_width = self.winfo_screenwidth()
+            screen_height = self.winfo_screenheight()
+            self.geometry(f"{screen_width}x{screen_height}+0+0")
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -71,60 +81,65 @@ class DataAnalysisApp(tk.Tk):
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.columnconfigure(10, weight=1)
 
-        ttk.Button(toolbar, text="Load Data", command=self.load_data).grid(
+        ttk.Button(toolbar, text="Load Data", command=self.load_data, width=APP_BUTTON_WIDTH).grid(
             row=0, column=0, padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Auto Analyze", command=self.analyze_data).grid(
+        ttk.Button(toolbar, text="Auto Analyze", command=self.analyze_data, width=APP_BUTTON_WIDTH).grid(
             row=0, column=1, padx=(0, 8)
         )
         ttk.Button(
             toolbar,
             text="Average Selected Columns",
             command=self.average_selected_columns,
+            width=APP_BUTTON_WIDTH,
         ).grid(row=0, column=2, padx=(0, 8))
         ttk.Button(
             toolbar,
             text="Import to Average Values",
             command=self.import_average_values,
+            width=APP_BUTTON_WIDTH,
         ).grid(row=1, column=2, padx=(0, 8), pady=(4, 0))
-        ttk.Button(toolbar, text="Frame Total Time", command=self.generate_frame_time_column).grid(
+        ttk.Button(toolbar, text="Frame Total Time", command=self.generate_frame_time_column, width=APP_BUTTON_WIDTH).grid(
             row=0, column=3, padx=(0, 8)
         )
         ttk.Button(
             toolbar,
             text="Import Frame Total",
             command=self.import_frame_total_to_average_values,
+            width=APP_BUTTON_WIDTH,
         ).grid(row=1, column=3, padx=(0, 8), pady=(4, 0))
         ttk.Button(
             toolbar,
             text="Export Average Values",
             command=self.export_average_values,
+            width=APP_BUTTON_WIDTH,
         ).grid(row=1, column=4, padx=(0, 8), pady=(4, 0))
         ttk.Button(
             toolbar,
             text="Plot Curves",
             command=self.show_curve_plot_tab,
+            width=APP_BUTTON_WIDTH,
         ).grid(row=1, column=5, padx=(0, 8), pady=(4, 0))
-        ttk.Button(toolbar, text="Undo", command=self.undo_last_action).grid(
+        ttk.Button(toolbar, text="Undo", command=self.undo_last_action, width=APP_BUTTON_WIDTH).grid(
             row=0, column=4, padx=(0, 8)
         )
-        ttk.Button(toolbar, text="Install Dependencies", command=self.install_dependencies).grid(
+        ttk.Button(toolbar, text="Install Dependencies", command=self.install_dependencies, width=APP_BUTTON_WIDTH).grid(
             row=0, column=5, padx=(0, 12)
         )
-        ttk.Button(toolbar, text="Zoom -", command=lambda: self._change_zoom(-ZOOM_STEP)).grid(
+        ttk.Button(toolbar, text="Zoom -", command=lambda: self._change_zoom(-ZOOM_STEP), width=APP_BUTTON_WIDTH).grid(
             row=0, column=6, padx=(0, 6)
         )
         self.zoom_label = ttk.Label(toolbar, text="100%")
         self.zoom_label.grid(row=0, column=7, padx=(0, 6))
-        ttk.Button(toolbar, text="Zoom +", command=lambda: self._change_zoom(ZOOM_STEP)).grid(
+        ttk.Button(toolbar, text="Zoom +", command=lambda: self._change_zoom(ZOOM_STEP), width=APP_BUTTON_WIDTH).grid(
             row=0, column=8, padx=(0, 6)
         )
-        ttk.Button(toolbar, text="Reset Zoom", command=self._reset_zoom).grid(
+        ttk.Button(toolbar, text="Reset Zoom", command=self._reset_zoom, width=APP_BUTTON_WIDTH).grid(
             row=0, column=9, padx=(0, 12)
         )
 
         self.file_label = ttk.Label(toolbar, text="No data loaded")
-        self.file_label.grid(row=0, column=10, sticky="w")
+        self.file_label.grid(row=1, column=6, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0))
 
         content = ttk.Frame(self, padding=(12, 0, 12, 12))
         content.grid(row=1, column=0, sticky="nsew")
@@ -212,7 +227,7 @@ class DataAnalysisApp(tk.Tk):
         self.average_columns.clear()
         self.average_editable_cell = None
         self.last_frame_total_column_name = None
-        self.file_label.configure(text=f"Current file: {path.name}")
+        self.file_label.configure(text=f"Current file: {path}")
         self._show_data_table()
 
     def analyze_data(self) -> None:
@@ -500,20 +515,22 @@ class DataAnalysisApp(tk.Tk):
 
         if data and headers:
             selected_columns = self._average_plot_selected_columns(len(headers))
+            x_index = self._preferred_plot_x_index(headers, set(), selected_columns)
+            stage_regions, stage_columns = self._plot_stage_regions(data, headers, x_index)
 
             if selected_columns:
-                x_index = 0
+                x_index = self._preferred_plot_x_index(headers, stage_columns, selected_columns)
                 for index in selected_columns:
-                    if index < len(headers) and "time" in str(headers[index]).lower():
+                    if index not in stage_columns and index < len(headers) and "time" in str(headers[index]).lower():
                         x_index = index
                         break
                 y_indexes = [
                     index
                     for index in selected_columns
-                    if index != x_index and 0 <= index < len(headers)
+                    if index != x_index and 0 <= index < len(headers) and index not in stage_columns
                 ]
                 if not y_indexes:
-                    y_indexes = [index for index in range(len(headers)) if index != x_index]
+                    y_indexes = [index for index in range(len(headers)) if index != x_index and index not in stage_columns]
                 keep_indexes = [x_index] + y_indexes
                 unique_indexes: list[int] = []
                 for index in keep_indexes:
@@ -524,11 +541,210 @@ class DataAnalysisApp(tk.Tk):
                     [row[index] if index < len(row) else "" for index in unique_indexes]
                     for row in data
                 ]
-                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:])
+                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:], stage_regions=stage_regions)
             else:
-                self.plot_panel.set_table(data, headers, selected_y_names=headers[1:])
+                keep_indexes = [index for index in range(len(headers)) if index not in stage_columns]
+                preferred_x = self._preferred_plot_x_index(headers, stage_columns)
+                if preferred_x in keep_indexes and keep_indexes[0] != preferred_x:
+                    keep_indexes = [preferred_x] + [index for index in keep_indexes if index != preferred_x]
+                filtered_headers = [headers[index] for index in keep_indexes]
+                filtered_data = [
+                    [row[index] if index < len(row) else "" for index in keep_indexes]
+                    for row in data
+                ]
+                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:], stage_regions=stage_regions)
         else:
             self.plot_panel.clear()
+
+    def _preferred_plot_x_index(self, headers: list[str], stage_columns: set[int], selected_columns: list[int] | None = None) -> int:
+        candidates = selected_columns if selected_columns else list(range(len(headers)))
+        for index in candidates:
+            if index in stage_columns or not (0 <= index < len(headers)):
+                continue
+            normalized = self._normalize_stage_header(headers[index])
+            if normalized in {"experiment time s", "experiments time s"}:
+                return index
+        for index in candidates:
+            if index in stage_columns or not (0 <= index < len(headers)):
+                continue
+            if "time" in str(headers[index]).lower():
+                return index
+        for index in range(len(headers)):
+            if index not in stage_columns:
+                return index
+        return 0
+
+    def _plot_stage_regions(
+        self,
+        data: list[list[str]],
+        headers: list[str],
+        x_index: int,
+    ) -> tuple[list[tuple[float, float, str, str]], set[int]]:
+        label_index = self._find_stage_column(headers, {"frame pumpplan", "frame pumppplan"})
+        list_index = self._find_stage_column(headers, {"list", "label", "name", "stage", "solution"})
+        if label_index is None:
+            label_index = list_index
+        color_index = self._find_stage_column(headers, {"color", "colour", "background color", "background colour"})
+        stage_columns = {index for index in (label_index, list_index, color_index) if index is not None}
+        if x_index is None or label_index is None or color_index is None:
+            return [], stage_columns
+
+        x_values: list[float] = []
+        labels: list[str] = []
+        for row in data:
+            if x_index >= len(row) or label_index >= len(row):
+                continue
+            x_value = self._to_float(row[x_index])
+            label = str(row[label_index]).strip()
+            if x_value is None or not label:
+                continue
+            x_values.append(x_value)
+            labels.append(label)
+
+        if not x_values:
+            return [], stage_columns
+
+        color_entries = self._stage_color_entries(data, list_index, color_index)
+        color_cursor = 0
+        raw_regions: list[tuple[float, float, str, str]] = []
+        run_start = 0
+        while run_start < len(x_values):
+            run_end = run_start
+            while run_end + 1 < len(x_values) and labels[run_end + 1] == labels[run_start]:
+                run_end += 1
+
+            if run_start == 0:
+                start = x_values[run_start]
+            else:
+                start = (x_values[run_start - 1] + x_values[run_start]) / 2
+
+            if run_end == len(x_values) - 1:
+                if len(x_values) >= 2:
+                    step = x_values[-1] - x_values[-2]
+                    if step <= 0:
+                        step = 1.0
+                else:
+                    step = 1.0
+                end = x_values[run_end] + step
+            else:
+                end = (x_values[run_end] + x_values[run_end + 1]) / 2
+
+            if end > start:
+                display_label, color, color_cursor = self._stage_style_for_label(labels[run_start], color_entries, color_cursor)
+                raw_regions.append((start, end, display_label, color))
+            run_start = run_end + 1
+        return self._merge_adjacent_stage_regions(raw_regions), stage_columns
+
+    def _stage_color_entries(
+        self,
+        data: list[list[str]],
+        list_index: int | None,
+        color_index: int,
+    ) -> list[tuple[str, str, str]]:
+        if list_index is None:
+            return []
+        entries: list[tuple[str, str, str]] = []
+        for row in data:
+            if list_index >= len(row) or color_index >= len(row):
+                continue
+            label = str(row[list_index]).strip()
+            color = str(row[color_index]).strip()
+            if label and self._is_plot_color(color):
+                entries.append((self._stage_key(label), label, color))
+        return entries
+
+    def _stage_style_for_label(
+        self,
+        label: str,
+        color_entries: list[tuple[str, str, str]],
+        start_index: int,
+    ) -> tuple[str, str, int]:
+        if not color_entries:
+            return self._display_stage_label(label), "#eeeeee", start_index
+        key = self._stage_key(label)
+        for offset in range(len(color_entries)):
+            index = (start_index + offset) % len(color_entries)
+            entry_key, entry_label, color = color_entries[index]
+            if self._stage_keys_match(key, entry_key):
+                return self._display_stage_label(entry_label), color, index + 1
+        _entry_key, entry_label, color = color_entries[start_index % len(color_entries)]
+        return self._display_stage_label(entry_label), color, start_index + 1
+
+    def _merge_adjacent_stage_regions(
+        self,
+        regions: list[tuple[float, float, str, str]],
+    ) -> list[tuple[float, float, str, str]]:
+        merged: list[tuple[float, float, str, str]] = []
+        for start, end, label, color in regions:
+            if merged and merged[-1][2] == label and merged[-1][3] == color and abs(merged[-1][1] - start) < 1e-6:
+                previous_start, _previous_end, previous_label, previous_color = merged[-1]
+                merged[-1] = (previous_start, end, previous_label, previous_color)
+            else:
+                merged.append((start, end, label, color))
+        return merged
+
+    def _stage_keys_match(self, label_key: str, entry_key: str) -> bool:
+        if not label_key or not entry_key:
+            return False
+        return (
+            label_key == entry_key
+            or label_key.startswith(entry_key)
+            or entry_key.startswith(label_key)
+            or entry_key in label_key
+            or label_key in entry_key
+        )
+
+    def _stage_key(self, value: object) -> str:
+        text = str(value).strip().lower()
+        text = text.split("---", 1)[0]
+        text = text.split("_to_", 1)[0]
+        text = text.replace("-", "")
+        return "".join(text.split())
+
+    def _display_stage_label(self, value: object) -> str:
+        text = str(value).strip()
+        lowered = text.lower()
+        if "target" in lowered:
+            return "Target"
+        if "hcl" in lowered:
+            return "HCl"
+        if "fs" in lowered:
+            return "FS"
+        if "ssc" in lowered:
+            return "5*SSC"
+        return text.split("---", 1)[0].split("-", 1)[0].strip() or text
+
+    def _find_stage_column(self, headers: list[str], names: set[str]) -> int | None:
+        normalized_names = {self._normalize_stage_header(name) for name in names}
+        for index, header in enumerate(headers):
+            normalized = self._normalize_stage_header(header)
+            if normalized in normalized_names:
+                return index
+        return None
+
+    def _normalize_stage_header(self, value: object) -> str:
+        text = str(value).strip().lower()
+        return " ".join(text.replace("_", " ").replace("-", " ").split())
+
+    def _is_plot_color(self, value: str) -> bool:
+        text = value.strip()
+        if not text:
+            return False
+        if text.startswith("#"):
+            digits = text[1:]
+            return len(digits) in {3, 6, 8} and all(char in "0123456789abcdefABCDEF" for char in digits)
+        return text.isalpha()
+
+    def _to_float(self, value: object) -> float | None:
+        try:
+            if pd is not None and pd.isna(value):
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            return float(text)
+        except (TypeError, ValueError):
+            return None
 
     def _average_plot_table(self) -> tuple[list[list[str]], list[str]]:
         if self.average_values_manager is None:
@@ -661,6 +877,7 @@ class DataAnalysisApp(tk.Tk):
                 image_column_index,
                 measuring_time_column_index,
                 existing_names={str(column) for column in self.data.columns},
+                selected_column_indexes=sorted(self.selected_columns),
             )
         except ValueError as exc:
             messagebox.showwarning("No Frame Data", str(exc))
@@ -668,20 +885,27 @@ class DataAnalysisApp(tk.Tk):
 
         insert_at = image_column_index + 1
         self._save_undo_snapshot()
-        self.data.insert(
-            insert_at,
-            result.column_name,
-            result.values,
-            allow_duplicates=True,
+        inserted_names: list[str] = []
+        for offset, (column_name, values) in enumerate(zip(result.column_names, result.values_list)):
+            insert_index = insert_at + offset
+            self.data.insert(
+                insert_index,
+                column_name,
+                values,
+                allow_duplicates=True,
+            )
+            inserted_names.append(column_name)
+            if self.sheet is not None:
+                self._insert_sheet_column(insert_index, column_name, values)
+        self.last_frame_total_column_name = result.column_names[0] if result.column_names else None
+        self.load_note = (
+            f"Inserted {', '.join(repr(name) for name in inserted_names)} after '{image_column_name}'. {result.note}"
         )
-        self.last_frame_total_column_name = result.column_name
-        self.load_note = f"Inserted '{result.column_name}' after '{image_column_name}'. {result.note}"
         if self.selected_columns:
             self.selected_columns = {
-                index + 1 if index >= insert_at else index for index in self.selected_columns
+                index + len(inserted_names) if index >= insert_at else index for index in self.selected_columns
             }
         if self.sheet is not None:
-            self._insert_sheet_column(insert_at, result.column_name, result.values)
             self._apply_sheet_highlights()
         self._write_output(
             "\n".join(

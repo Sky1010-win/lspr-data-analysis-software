@@ -11,6 +11,9 @@ except ModuleNotFoundError:  # pragma: no cover - handled by the main app.
     pd = None
 
 
+APP_BUTTON_WIDTH = 22
+
+
 class AverageValuesManager:
     def __init__(self, app: tk.Tk, parent_frame: ttk.Frame) -> None:
         self.app = app
@@ -21,6 +24,9 @@ class AverageValuesManager:
         self.toolbar.columnconfigure(0, weight=1)
         self.toolbar.columnconfigure(1, weight=0)
         self.toolbar.columnconfigure(2, weight=0)
+        ttk.Button(self.toolbar, text="Load Average Data", command=self.load_data, width=APP_BUTTON_WIDTH).grid(
+            row=0, column=1, padx=(0, 8), sticky="e"
+        )
 
         self.content = ttk.Frame(self.parent_frame)
         self.content.grid(row=1, column=0, sticky="nsew")
@@ -184,6 +190,8 @@ class AverageValuesManager:
 
         if self.data:
             data = [list(row) for row in self.data]
+            data = self._trim_trailing_empty_rows(data)
+            self.data = [list(row) for row in data]
             headers = self.headers[:]
             if not headers:
                 headers = [f"Column {index + 1}" for index in range(len(data[0]))]
@@ -202,7 +210,7 @@ class AverageValuesManager:
         row_index = [str(index) for index in range(1, len(data) + 1)]
         self.sheet.set_sheet_data(
             data,
-            reset_col_positions=True,
+            reset_col_positions=False,
             reset_row_positions=True,
             reset_highlights=True,
         )
@@ -213,8 +221,24 @@ class AverageValuesManager:
         self.sheet.redraw()
         if select_tab:
             self.app.notebook.select(self.app.average_frame)
-        if hasattr(self.app, "update_curve_plot"):
+        if self._plot_tab_is_visible() and hasattr(self.app, "update_curve_plot"):
             self.app.update_curve_plot(self.data, self.headers)
+
+    def _trim_trailing_empty_rows(self, rows: list[list[str]]) -> list[list[str]]:
+        trimmed = [list(row) for row in rows]
+        while len(trimmed) > 1 and all(not str(value).strip() for value in trimmed[-1]):
+            trimmed.pop()
+        return trimmed
+
+    def _plot_tab_is_visible(self) -> bool:
+        notebook = getattr(self.app, "notebook", None)
+        plot_frame = getattr(self.app, "plot_frame", None)
+        if notebook is None or plot_frame is None:
+            return False
+        try:
+            return str(notebook.select()) == str(plot_frame)
+        except Exception:
+            return False
 
     def _render_note(self, note: str) -> None:
         if self.sheet is None:
@@ -572,12 +596,48 @@ class AverageValuesManager:
             messagebox.showinfo("No Data", "There is no Average Values data to export.")
             return
 
-        file_name = filedialog.asksaveasfilename(
-            title="Export Average Values",
-            defaultextension=".csv",
+        while True:
+            file_name = filedialog.asksaveasfilename(
+                title="Export Average Values",
+                defaultextension=".csv",
+                filetypes=[
+                    ("CSV files", "*.csv"),
+                    ("Excel files", "*.xlsx *.xls"),
+                    ("All files", "*.*"),
+                ],
+            )
+            if not file_name:
+                return
+
+            path = Path(file_name)
+            try:
+                if path.suffix.lower() in {".xlsx", ".xls"}:
+                    self._export_excel(path)
+                else:
+                    self._export_csv(path)
+            except PermissionError as exc:
+                messagebox.showwarning(
+                    "No Write Permission",
+                    "The selected location cannot be written to.\n\n"
+                    "Please choose another folder, or close the file if it is already open in Excel.\n\n"
+                    f"Details:\n{exc}",
+                )
+                continue
+            except Exception as exc:
+                messagebox.showerror("Export Failed", f"Unable to export data:\n{exc}")
+                return
+
+            messagebox.showinfo("Export Complete", f"Average Values exported to:\n{path}")
+            return
+
+    def load_data(self) -> None:
+        file_name = filedialog.askopenfilename(
+            title="Load Average Values",
             filetypes=[
+                ("Data files", "*.csv *.txt *.tsv *.xlsx *.xls"),
                 ("CSV files", "*.csv"),
                 ("Excel files", "*.xlsx *.xls"),
+                ("Text files", "*.txt *.tsv"),
                 ("All files", "*.*"),
             ],
         )
@@ -586,15 +646,53 @@ class AverageValuesManager:
 
         path = Path(file_name)
         try:
-            if path.suffix.lower() in {".xlsx", ".xls"}:
-                self._export_excel(path)
-            else:
-                self._export_csv(path)
+            headers, rows = self._read_average_file(path)
         except Exception as exc:
-            messagebox.showerror("Export Failed", f"Unable to export data:\n{exc}")
+            messagebox.showerror("Load Failed", f"Unable to load Average Values data:\n{exc}")
             return
 
-        messagebox.showinfo("Export Complete", f"Average Values exported to:\n{path}")
+        if not headers or not rows:
+            messagebox.showinfo("No Data", "No usable table data was found in the selected file.")
+            return
+
+        self.headers = headers
+        self.data = rows
+        self._ensure_sheet()
+        self._render(select_tab=True)
+        messagebox.showinfo("Load Complete", f"Average Values loaded:\n{path}")
+
+    def _read_average_file(self, path: Path) -> tuple[list[str], list[list[str]]]:
+        suffix = path.suffix.lower()
+        if suffix in {".xlsx", ".xls"}:
+            if pd is None:
+                raise RuntimeError("pandas is required to load Excel files.")
+            df = pd.read_excel(path, dtype=str, keep_default_na=False)
+            return self._dataframe_to_table(df)
+
+        if pd is not None:
+            separator = "\t" if suffix == ".tsv" else None
+            df = pd.read_csv(path, dtype=str, keep_default_na=False, sep=separator, engine="python")
+            return self._dataframe_to_table(df)
+
+        delimiter = "\t" if suffix == ".tsv" else ","
+        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+            reader = csv.reader(handle, delimiter=delimiter)
+            rows = [[self._format_cell(cell) for cell in row] for row in reader]
+        rows = [row for row in rows if any(cell.strip() for cell in row)]
+        if not rows:
+            return [], []
+        headers = [cell.strip() or f"Column {index + 1}" for index, cell in enumerate(rows[0])]
+        data = rows[1:]
+        self._normalize_rows(data)
+        return headers, data
+
+    def _dataframe_to_table(self, df) -> tuple[list[str], list[list[str]]]:
+        df = df.dropna(axis=0, how="all").dropna(axis=1, how="all")
+        headers = [str(column).strip() or f"Column {index + 1}" for index, column in enumerate(df.columns)]
+        rows = [[self._format_cell(value) for value in row] for row in df.values.tolist()]
+        rows = [row for row in rows if any(cell.strip() for cell in row)]
+        self._normalize_rows(rows)
+        return headers, rows
 
     def _export_csv(self, path: Path) -> None:
         normalized = self._export_rows()

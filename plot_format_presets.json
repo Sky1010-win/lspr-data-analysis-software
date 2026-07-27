@@ -1,0 +1,103 @@
+{
+  "Format 1": {
+    "title": "LSPR_Shift VS Time",
+    "x_title": "Time [s]",
+    "running_buffer": "5*SSC",
+    "lspr_font_size": "10",
+    "chart_type": "line",
+    "line_width": "2",
+    "point_size": "3",
+    "step": "1",
+    "show_points": false,
+    "show_grid": true,
+    "show_legend": true,
+    "show_right_labels": true,
+    "smooth": false,
+    "smooth_window": 0,
+    "grid_density": 8,
+    "x_tick_count": 18,
+    "y_tick_count": 18,
+    "grid_color": "#eeeeee",
+    "grid_width": "1",
+    "grid_style": "dash",
+    "tick_font_size": "9",
+    "tick_bold": true,
+    "stage_opacity": 56,
+    "series_labels": {
+      "Au": "Au",
+      "CB": "CB",
+      "PolyA200": "PolyA200",
+      "PolyA50": "PolyA50",
+      "PolyA5": "PolyA5",
+      "Thiol_CTN": "Thiol_CTN",
+      "Thiol_50": "Thiol_50",
+      "Thiol_5": "Thiol_5",
+      "Thiol_0.5": "Thiol_0.5"
+    },
+    "series_colors": {
+      "Au": "#e03e3e",
+      "CB": "#e0aa3e",
+      "PolyA200": "#aae03e",
+      "PolyA50": "#3ee03e",
+      "PolyA5": "#3ee0aa",
+      "Thiol_CTN": "#3eaae0",
+      "Thiol_50": "#3e3ee0",
+      "Thiol_5": "#aa3ee0",
+      "Thiol_0.5": "#e03eaa"
+    },
+    "series_widths": {
+      "Au": "2",
+      "CB": "2",
+      "PolyA200": "2",
+      "PolyA50": "2",
+      "PolyA5": "2",
+      "Thiol_CTN": "2",
+      "Thiol_50": "2",
+      "Thiol_5": "2",
+      "Thiol_0.5": "2"
+    },
+    "legend_position": [
+      1565.0,
+      55.0
+    ],
+    "right_label_positions": {
+      "Thiol_CTN": [
+        1483.5,
+        50.5
+      ],
+      "Au": [
+        1487.5,
+        178.5
+      ],
+      "Thiol_0.5": [
+        1488.5,
+        204.5
+      ],
+      "CB": [
+        1492.5,
+        346.5
+      ],
+      "Thiol_5": [
+        1492.5,
+        370.5
+      ],
+      "PolyA200": [
+        1497.0,
+        448.5
+      ],
+      "PolyA50": [
+        1497.5,
+        474.5
+      ],
+      "PolyA5": [
+        1499.0,
+        507.5
+      ],
+      "Thiol_50": [
+        1508.0,
+        111.5
+      ]
+    },
+    "annotations": []
+  }
+}
