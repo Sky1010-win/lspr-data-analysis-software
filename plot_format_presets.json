@@ -99,5 +99,263 @@
       ]
     },
     "annotations": []
+  },
+  "As3+_Pb2+": {
+    "title": "",
+    "x_title": "Time [s]",
+    "running_buffer": "5*SSC",
+    "lspr_font_size": "10",
+    "chart_type": "line",
+    "line_width": "2",
+    "point_size": "3",
+    "step": "1",
+    "show_points": false,
+    "show_grid": true,
+    "show_legend": true,
+    "show_right_labels": true,
+    "smooth": false,
+    "smooth_window": 0,
+    "grid_density": 6,
+    "x_tick_count": 30,
+    "y_tick_count": 16,
+    "grid_color": "#eeeeee",
+    "grid_width": "1",
+    "grid_style": "solid",
+    "tick_font_size": "9",
+    "tick_bold": false,
+    "stage_opacity": 70,
+    "series_labels": {
+      "Thiol_M69_5uM": "Thiol_M69_5uM",
+      "Thiol_M69_25uM": "Thiol_M69_25uM",
+      "As3+_50uM": "As3+_50uM",
+      "Pb2+_50uM": "Pb2+_50uM",
+      "Au_CB": "Au_CB",
+      "Au": "Au"
+    },
+    "series_colors": {
+      "Thiol_M69_5uM": "#000000",
+      "Thiol_M69_25uM": "#ff0000",
+      "As3+_50uM": "#8080ff",
+      "Pb2+_50uM": "#3ee0e0",
+      "Au_CB": "#3e3ee0",
+      "Au": "#e03ee0"
+    },
+    "series_widths": {
+      "Thiol_M69_5uM": "4",
+      "Thiol_M69_25uM": "4",
+      "As3+_50uM": "4",
+      "Pb2+_50uM": "4",
+      "Au_CB": "4",
+      "Au": "4"
+    },
+    "legend_position": null,
+    "right_label_positions": {
+      "As3+_50uM": [
+        1693.5,
+        -70.5
+      ],
+      "Thiol_M69_25uM": [
+        1691.0,
+        -178.5
+      ],
+      "Thiol_M69_5uM": [
+        1660.5,
+        -85.5
+      ],
+      "Pb2+_50uM": [
+        1821.0,
+        -267.5
+      ],
+      "Au": [
+        1685.5,
+        -163.5
+      ],
+      "Au_CB": [
+        1762.5,
+        -123.5
+      ]
+    },
+    "annotations": []
+  },
+  "Format 2": {
+    "title": "LSPR_Shift VS Time",
+    "x_title": "Time [s]",
+    "running_buffer": "5*SSC",
+    "lspr_font_size": "10",
+    "chart_type": "line",
+    "line_width": "2",
+    "point_size": "3",
+    "step": "1",
+    "show_points": false,
+    "show_grid": true,
+    "show_legend": true,
+    "show_right_labels": true,
+    "smooth": false,
+    "smooth_window": 0,
+    "grid_density": 8,
+    "x_tick_count": 18,
+    "y_tick_count": 18,
+    "grid_color": "#eeeeee",
+    "grid_width": "1",
+    "grid_style": "dash",
+    "tick_font_size": "9",
+    "tick_bold": true,
+    "stage_opacity": 98,
+    "series_labels": {
+      "WithoutHeating_CB": "WithoutHeating_CB",
+      "WH_Thiol_CTN": "WH_Thiol_CTN",
+      "WH_PolyA10_5uM": "WH_PolyA10_5uM",
+      "WH_PolyA5_5uM": "WH_PolyA5_5uM",
+      "H_PolyA5_50uM": "H_PolyA5_50uM",
+      "WH_Thiol_M69_5uM": "WH_Thiol_M69_5uM",
+      "WH_M69_50uM": "WH_M69_50uM",
+      "WH_PolyA10_50uM": "WH_PolyA10_50uM",
+      "WH_PolyA5_50uM": "WH_PolyA5_50uM",
+      "Heating_CB": "Heating_CB",
+      "H_Thiol_CTN_5uM": "H_Thiol_CTN_5uM",
+      "H_PolyA10_5uM": "H_PolyA10_5uM",
+      "H_PolyA5_5uM": "H_PolyA5_5uM",
+      "H_Thiol_M69_5uM": "H_Thiol_M69_5uM",
+      "H_M69_50uM": "H_M69_50uM",
+      "H_PolyA10_50uM": "H_PolyA10_50uM",
+      "Au": "Au",
+      "CB": "CB",
+      "PolyA200": "PolyA200",
+      "PolyA50": "PolyA50",
+      "PolyA5": "PolyA5",
+      "Thiol_CTN": "Thiol_CTN",
+      "Thiol_50": "Thiol_50",
+      "Thiol_5": "Thiol_5",
+      "Thiol_0.5": "Thiol_0.5"
+    },
+    "series_colors": {
+      "WithoutHeating_CB": "#00ff80",
+      "WH_Thiol_CTN": "#80ffff",
+      "WH_PolyA10_5uM": "#000000",
+      "WH_PolyA5_5uM": "#ff0000",
+      "H_PolyA5_50uM": "#e03e3e",
+      "WH_Thiol_M69_5uM": "#0080ff",
+      "WH_M69_50uM": "#8000ff",
+      "WH_PolyA10_50uM": "#804040",
+      "WH_PolyA5_50uM": "#ff8080",
+      "Heating_CB": "#3ee0e0",
+      "H_Thiol_CTN_5uM": "#3ea3e0",
+      "H_PolyA10_5uM": "#3e67e0",
+      "H_PolyA5_5uM": "#533ee0",
+      "H_Thiol_M69_5uM": "#8f3ee0",
+      "H_M69_50uM": "#cc3ee0",
+      "H_PolyA10_50uM": "#e03eb8",
+      "Au": "#e03e3e",
+      "CB": "#e0aa3e",
+      "PolyA200": "#aae03e",
+      "PolyA50": "#3ee03e",
+      "PolyA5": "#3ee0aa",
+      "Thiol_CTN": "#3eaae0",
+      "Thiol_50": "#3e3ee0",
+      "Thiol_5": "#aa3ee0",
+      "Thiol_0.5": "#e03eaa"
+    },
+    "series_widths": {
+      "WithoutHeating_CB": "4",
+      "WH_Thiol_CTN": "4",
+      "WH_PolyA10_5uM": "4",
+      "WH_PolyA5_5uM": "4",
+      "H_PolyA5_50uM": "2",
+      "WH_Thiol_M69_5uM": "4",
+      "WH_M69_50uM": "4",
+      "WH_PolyA10_50uM": "4",
+      "WH_PolyA5_50uM": "4",
+      "Heating_CB": "2",
+      "H_Thiol_CTN_5uM": "2",
+      "H_PolyA10_5uM": "2",
+      "H_PolyA5_5uM": "2",
+      "H_Thiol_M69_5uM": "2",
+      "H_M69_50uM": "2",
+      "H_PolyA10_50uM": "2",
+      "Au": "2",
+      "CB": "2",
+      "PolyA200": "2",
+      "PolyA50": "2",
+      "PolyA5": "2",
+      "Thiol_CTN": "2",
+      "Thiol_50": "2",
+      "Thiol_5": "2",
+      "Thiol_0.5": "2"
+    },
+    "legend_position": [
+      1699.0,
+      88.0
+    ],
+    "right_label_positions": {
+      "Thiol_CTN": [
+        1483.5,
+        50.5
+      ],
+      "Au": [
+        1487.5,
+        178.5
+      ],
+      "Thiol_0.5": [
+        1488.5,
+        204.5
+      ],
+      "CB": [
+        1492.5,
+        346.5
+      ],
+      "Thiol_5": [
+        1492.5,
+        370.5
+      ],
+      "PolyA200": [
+        1497.0,
+        448.5
+      ],
+      "PolyA50": [
+        1497.5,
+        474.5
+      ],
+      "PolyA5": [
+        1499.0,
+        507.5
+      ],
+      "Thiol_50": [
+        1508.0,
+        111.5
+      ],
+      "WithoutHeating_CB": [
+        1574.0,
+        135.5
+      ],
+      "WH_Thiol_CTN": [
+        1699.5,
+        295.5
+      ],
+      "WH_PolyA10_5uM": [
+        1696.5,
+        353.5
+      ],
+      "WH_PolyA10_50uM": [
+        1698.0,
+        329.5
+      ],
+      "WH_PolyA5_50uM": [
+        1695.5,
+        393.5
+      ],
+      "WH_PolyA5_5uM": [
+        1696.0,
+        458.5
+      ],
+      "WH_Thiol_M69_5uM": [
+        1695.5,
+        429.5
+      ],
+      "WH_M69_50uM": [
+        1697.0,
+        485.5
+      ]
+    },
+    "annotations": []
   }
 }

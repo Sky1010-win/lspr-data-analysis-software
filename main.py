@@ -517,6 +517,7 @@ class DataAnalysisApp(tk.Tk):
             selected_columns = self._average_plot_selected_columns(len(headers))
             x_index = self._preferred_plot_x_index(headers, set(), selected_columns)
             stage_regions, stage_columns = self._plot_stage_regions(data, headers, x_index)
+            target_regions = self._plot_target_regions(data, headers, x_index)
 
             if selected_columns:
                 x_index = self._preferred_plot_x_index(headers, stage_columns, selected_columns)
@@ -541,7 +542,13 @@ class DataAnalysisApp(tk.Tk):
                     [row[index] if index < len(row) else "" for index in unique_indexes]
                     for row in data
                 ]
-                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:], stage_regions=stage_regions)
+                self.plot_panel.set_table(
+                    filtered_data,
+                    filtered_headers,
+                    selected_y_names=filtered_headers[1:],
+                    stage_regions=stage_regions,
+                    target_regions=target_regions,
+                )
             else:
                 keep_indexes = [index for index in range(len(headers)) if index not in stage_columns]
                 preferred_x = self._preferred_plot_x_index(headers, stage_columns)
@@ -552,7 +559,13 @@ class DataAnalysisApp(tk.Tk):
                     [row[index] if index < len(row) else "" for index in keep_indexes]
                     for row in data
                 ]
-                self.plot_panel.set_table(filtered_data, filtered_headers, selected_y_names=filtered_headers[1:], stage_regions=stage_regions)
+                self.plot_panel.set_table(
+                    filtered_data,
+                    filtered_headers,
+                    selected_y_names=filtered_headers[1:],
+                    stage_regions=stage_regions,
+                    target_regions=target_regions,
+                )
         else:
             self.plot_panel.clear()
 
@@ -635,6 +648,66 @@ class DataAnalysisApp(tk.Tk):
             run_start = run_end + 1
         return self._merge_adjacent_stage_regions(raw_regions), stage_columns
 
+    def _plot_target_regions(
+        self,
+        data: list[list[str]],
+        headers: list[str],
+        x_index: int,
+    ) -> list[tuple[float, float, str, str]]:
+        list_index = self._find_stage_column(headers, {"list", "label", "name", "stage", "solution"})
+        color_index = self._find_stage_column(headers, {"color", "colour", "background color", "background colour"})
+        if x_index is None or list_index is None:
+            return []
+
+        x_values: list[float] = []
+        labels: list[str] = []
+        colors: list[str] = []
+        for row in data:
+            if x_index >= len(row) or list_index >= len(row):
+                continue
+            x_value = self._to_float(row[x_index])
+            label = str(row[list_index]).strip()
+            if x_value is None or not label:
+                continue
+            x_values.append(x_value)
+            labels.append(label)
+            color = ""
+            if color_index is not None and color_index < len(row):
+                color = str(row[color_index]).strip()
+            colors.append(color if self._is_plot_color(color) else "#80d8ff")
+
+        if len(x_values) < 2:
+            return []
+
+        regions: list[tuple[float, float, str, str]] = []
+        run_start = 0
+        while run_start < len(x_values):
+            run_end = run_start
+            while run_end + 1 < len(x_values) and labels[run_end + 1] == labels[run_start]:
+                run_end += 1
+
+            if run_start == 0:
+                start = x_values[run_start]
+            else:
+                start = (x_values[run_start - 1] + x_values[run_start]) / 2
+
+            if run_end + 1 < len(x_values):
+                end = (x_values[run_end] + x_values[run_end + 1]) / 2
+            else:
+                if run_end > run_start:
+                    step = x_values[run_end] - x_values[run_end - 1]
+                else:
+                    previous_step = x_values[run_start] - x_values[run_start - 1] if run_start > 0 else 1.0
+                    step = previous_step if previous_step > 0 else 1.0
+                end = x_values[run_end] + step / 2
+
+            label = self._display_stage_label(labels[run_start])
+            if "target" in label.lower() and end > start:
+                regions.append((start, end, label, colors[run_start]))
+            run_start = run_end + 1
+
+        return self._merge_adjacent_stage_regions(regions)
+
     def _stage_color_entries(
         self,
         data: list[list[str]],
@@ -705,7 +778,7 @@ class DataAnalysisApp(tk.Tk):
         text = str(value).strip()
         lowered = text.lower()
         if "target" in lowered:
-            return "Target"
+            return text.split("---", 1)[0].split("-", 1)[0].strip() or "Target"
         if "hcl" in lowered:
             return "HCl"
         if "fs" in lowered:

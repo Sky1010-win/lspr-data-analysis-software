@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 import tkinter as tk
 from pathlib import Path
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 try:
     import pandas as pd
@@ -39,6 +39,719 @@ class PlotSeries:
     color: str
 
 
+class LSPRShiftBarChartWindow(tk.Toplevel):
+    def __init__(
+        self,
+        parent: tk.Misc,
+        entries: list[dict[str, object]],
+        initial_target: str = "",
+        y_axis_title: str = "Delta LSPR [nm]",
+    ) -> None:
+        super().__init__(parent)
+        self.title("LSPR Shift Bar Chart")
+        self.geometry("820x520")
+        self.minsize(560, 360)
+        self.transient(parent.winfo_toplevel())
+        self.entries = entries
+        self.y_axis_title = y_axis_title
+        self.target_var = tk.StringVar(value=initial_target or "All")
+        self.label_font_size_var = tk.StringVar(value="8")
+        self.value_font_size_var = tk.StringVar(value="8")
+        self.label_bold_var = tk.BooleanVar(value=False)
+        self.value_bold_var = tk.BooleanVar(value=True)
+        self.show_error_bars_var = tk.BooleanVar(value=True)
+        self.background_color_var = tk.StringVar(value=self._initial_background_color())
+        self.bar_colors: dict[str, str] = {}
+        self.text_annotations: list[dict[str, object]] = []
+        self._annotation_hitboxes: list[tuple[int, tuple[float, float, float, float]]] = []
+        self._drag_annotation_index: int | None = None
+        self._drag_offset: tuple[float, float] = (0.0, 0.0)
+        for entry in self.entries:
+            name = str(entry.get("name", "")).strip()
+            if name:
+                self.bar_colors.setdefault(name, str(entry.get("color", "#f4bd82")))
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(self, padding=(10, 10, 10, 0))
+        controls.grid(row=0, column=0, sticky="ew")
+        controls.columnconfigure(5, weight=1)
+        ttk.Label(controls, text="Target").grid(row=0, column=0, padx=(0, 6), sticky="w")
+        self.target_box = ttk.Combobox(
+            controls,
+            textvariable=self.target_var,
+            values=self._target_options(),
+            width=28,
+            state="readonly",
+        )
+        self.target_box.grid(row=0, column=1, sticky="w")
+        self.target_box.bind("<<ComboboxSelected>>", lambda _event: self.draw_chart())
+        ttk.Label(controls, text="Solutions").grid(row=0, column=2, padx=(14, 6), sticky="nw")
+        solution_frame = ttk.Frame(controls)
+        solution_frame.grid(row=0, column=3, sticky="w")
+        self.solution_listbox = tk.Listbox(solution_frame, selectmode=tk.MULTIPLE, exportselection=False, height=4, width=30)
+        solution_scroll = ttk.Scrollbar(solution_frame, orient="vertical", command=self.solution_listbox.yview)
+        self.solution_listbox.configure(yscrollcommand=solution_scroll.set)
+        self.solution_listbox.grid(row=0, column=0, sticky="nsew")
+        solution_scroll.grid(row=0, column=1, sticky="ns")
+        for name in self._solution_options():
+            self.solution_listbox.insert(tk.END, name)
+        self.solution_listbox.selection_set(0, tk.END)
+        self.solution_listbox.bind("<<ListboxSelect>>", lambda _event: self.draw_chart())
+        button_box = ttk.Frame(controls)
+        button_box.grid(row=0, column=4, padx=(8, 0), sticky="nw")
+        ttk.Button(button_box, text="All", command=self._select_all_solutions, width=8).grid(row=0, column=0, pady=(0, 4))
+        ttk.Button(button_box, text="Clear", command=self._clear_solution_selection, width=8).grid(row=1, column=0)
+        format_box = ttk.Frame(controls)
+        format_box.grid(row=1, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        ttk.Label(format_box, text="Name Font").grid(row=0, column=0, padx=(0, 4), sticky="w")
+        ttk.Spinbox(format_box, from_=6, to=24, textvariable=self.label_font_size_var, width=5, command=self.draw_chart).grid(row=0, column=1, padx=(0, 6), sticky="w")
+        ttk.Checkbutton(format_box, text="Bold", variable=self.label_bold_var, command=self.draw_chart).grid(row=0, column=2, padx=(0, 12), sticky="w")
+        ttk.Label(format_box, text="Value Font").grid(row=0, column=3, padx=(0, 4), sticky="w")
+        ttk.Spinbox(format_box, from_=6, to=24, textvariable=self.value_font_size_var, width=5, command=self.draw_chart).grid(row=0, column=4, padx=(0, 6), sticky="w")
+        ttk.Checkbutton(format_box, text="Bold", variable=self.value_bold_var, command=self.draw_chart).grid(row=0, column=5, padx=(0, 12), sticky="w")
+        ttk.Checkbutton(format_box, text="Error Bars", variable=self.show_error_bars_var, command=self.draw_chart).grid(row=0, column=6, padx=(0, 12), sticky="w")
+        ttk.Button(format_box, text="Insert Text", command=self.insert_text_annotation, width=12).grid(row=0, column=7, padx=(0, 8), sticky="w")
+        ttk.Button(format_box, text="Background", command=self.choose_background_color, width=12).grid(row=0, column=8, padx=(0, 8), sticky="w")
+        ttk.Button(format_box, text="Bar Colors", command=self.open_bar_color_settings, width=12).grid(row=0, column=9, padx=(0, 8), sticky="w")
+        ttk.Button(format_box, text="Export Image", command=self.export_high_resolution_image, width=13).grid(row=0, column=10, padx=(0, 8), sticky="w")
+
+        self.canvas = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground="#d0d0d0")
+        self.canvas.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        self.canvas.bind("<Configure>", lambda _event: self.draw_chart())
+        self.canvas.bind("<ButtonPress-1>", self._start_annotation_drag)
+        self.canvas.bind("<B1-Motion>", self._drag_annotation)
+        self.canvas.bind("<ButtonRelease-1>", self._end_annotation_drag)
+        self.after(0, self.draw_chart)
+
+    def _target_options(self) -> list[str]:
+        targets = []
+        seen: set[str] = set()
+        for entry in self.entries:
+            target = str(entry.get("target", "")).strip()
+            if target and target not in seen:
+                seen.add(target)
+                targets.append(target)
+        return ["All", *targets]
+
+    def _visible_entries(self) -> list[dict[str, object]]:
+        target = self.target_var.get().strip()
+        selected_solutions = self._selected_solutions()
+        entries = self.entries
+        if target and target != "All":
+            entries = [entry for entry in entries if str(entry.get("target", "")).strip() == target]
+        if selected_solutions:
+            entries = [entry for entry in entries if str(entry.get("name", "")).strip() in selected_solutions]
+        else:
+            entries = []
+        return entries
+
+    def _solution_options(self) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for entry in self.entries:
+            name = str(entry.get("name", "")).strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
+
+    def _selected_solutions(self) -> set[str]:
+        selected: set[str] = set()
+        for index in self.solution_listbox.curselection():
+            selected.add(str(self.solution_listbox.get(index)))
+        return selected
+
+    def _select_all_solutions(self) -> None:
+        self.solution_listbox.selection_set(0, tk.END)
+        self.draw_chart()
+
+    def _clear_solution_selection(self) -> None:
+        self.solution_listbox.selection_clear(0, tk.END)
+        self.draw_chart()
+
+    def _label_font_size(self) -> int:
+        return self._clamped_int_text(self.label_font_size_var, 8, 6, 24)
+
+    def _value_font_size(self) -> int:
+        return self._clamped_int_text(self.value_font_size_var, 8, 6, 24)
+
+    def _clamped_int_text(self, var: tk.StringVar, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(float(var.get()))
+        except (tk.TclError, ValueError):
+            value = default
+            var.set(str(default))
+        value = max(minimum, min(maximum, value))
+        var.set(str(value))
+        return value
+
+    def _initial_background_color(self) -> str:
+        for entry in self.entries:
+            color = str(entry.get("target_color", "")).strip()
+            if color:
+                return self._soft_fill_color(color)
+        return "#ffffff"
+
+    def _bar_color(self, entry: dict[str, object]) -> str:
+        name = str(entry.get("name", "")).strip()
+        return self.bar_colors.get(name, str(entry.get("color", "#f4bd82")))
+
+    def _wrap_label(self, text: str, max_chars: int) -> str:
+        cleaned = text.strip()
+        if not cleaned or len(cleaned) <= max_chars:
+            return cleaned
+        parts: list[str] = []
+        current = ""
+        for chunk in cleaned.replace("-", "_").split("_"):
+            candidate = chunk if not current else f"{current}_{chunk}"
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    parts.append(current)
+                current = chunk
+        if current:
+            parts.append(current)
+        if len(parts) <= 1:
+            return "\n".join(cleaned[index:index + max_chars] for index in range(0, len(cleaned), max_chars))
+        return "\n".join(parts)
+
+    def choose_background_color(self) -> None:
+        chosen = colorchooser.askcolor(color=self.background_color_var.get(), parent=self)
+        if chosen and chosen[1]:
+            self.background_color_var.set(chosen[1])
+            self.draw_chart()
+
+    def insert_text_annotation(self) -> None:
+        text = simpledialog.askstring("Insert Text", "Text:", parent=self)
+        if text is None:
+            return
+        text = text.strip()
+        if not text:
+            return
+        width = max(self.canvas.winfo_width(), 560)
+        height = max(self.canvas.winfo_height(), 360)
+        self.text_annotations.append(
+            {
+                "text": text,
+                "x": float(width * 0.5),
+                "y": float(height * 0.18),
+                "font_size": 11,
+                "bold": True,
+            }
+        )
+        self.draw_chart()
+
+    def open_bar_color_settings(self) -> None:
+        window = tk.Toplevel(self)
+        window.title("Bar Colors")
+        window.transient(self)
+        window.geometry("420x420")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        frame = ttk.Frame(window, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+        frame.columnconfigure(1, weight=1)
+        names = self._solution_options()
+        if not names:
+            ttk.Label(frame, text="No bars available.").grid(row=0, column=0, sticky="w")
+            return
+        for row, name in enumerate(names):
+            ttk.Label(frame, text=name).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+            button = tk.Button(frame, text="     ", width=4, bg=self.bar_colors.get(name, "#f4bd82"))
+            button.grid(row=row, column=1, sticky="w", pady=3)
+
+            def choose(n=name, btn=button) -> None:
+                chosen = colorchooser.askcolor(color=self.bar_colors.get(n, "#f4bd82"), parent=window)
+                if chosen and chosen[1]:
+                    self.bar_colors[n] = chosen[1]
+                    btn.configure(bg=chosen[1])
+                    self.draw_chart()
+
+            button.configure(command=choose)
+
+    def export_high_resolution_image(self) -> None:
+        if ImageGrab is None or Image is None:
+            file_path = filedialog.asksaveasfilename(
+                title="Export Bar Chart Image",
+                defaultextension=".eps",
+                filetypes=[
+                    ("Encapsulated PostScript", "*.eps"),
+                    ("PostScript files", "*.ps"),
+                    ("All files", "*.*"),
+                ],
+            )
+            if not file_path:
+                return
+            try:
+                self.canvas.postscript(file=file_path, colormode="color")
+                messagebox.showinfo(
+                    "Export Complete",
+                    f"Pillow is not installed, so a vector PostScript image was exported to:\n{file_path}",
+                )
+            except Exception as exc:
+                messagebox.showerror("Export Failed", f"Unable to export image:\n{exc}")
+            return
+        file_path = filedialog.asksaveasfilename(
+            title="Export Bar Chart Image",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG image", "*.png"),
+                ("TIFF image", "*.tif *.tiff"),
+                ("JPEG image", "*.jpg *.jpeg"),
+                ("Bitmap image", "*.bmp"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+        try:
+            image = self._capture_visible_canvas(scale=3)
+            suffix = Path(file_path).suffix.lower()
+            if suffix in {".jpg", ".jpeg"}:
+                image = image.convert("RGB")
+            image.save(file_path)
+            messagebox.showinfo("Export Complete", f"Bar chart image exported to:\n{file_path}")
+        except Exception as exc:
+            messagebox.showerror("Export Failed", f"Unable to export bar chart image:\n{exc}")
+
+    def _capture_visible_canvas(self, scale: int = 3):
+        self.lift()
+        self.update_idletasks()
+        self.canvas.update()
+        x = self.canvas.winfo_rootx()
+        y = self.canvas.winfo_rooty()
+        width = max(1, self.canvas.winfo_width())
+        height = max(1, self.canvas.winfo_height())
+        image = ImageGrab.grab(bbox=(x, y, x + width, y + height))
+        if scale > 1:
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            image = image.resize((width * scale, height * scale), resampling)
+        return image
+
+    def _render_export_image(self, scale: int = 3):
+        entries = self._visible_entries()
+        width = max(self.canvas.winfo_width(), 900)
+        height = max(self.canvas.winfo_height(), 460)
+        image = Image.new("RGB", (width * scale, height * scale), "white")
+        draw = ImageDraw.Draw(image)
+
+        def s(value: float) -> int:
+            return int(round(value * scale))
+
+        left, right = 82, width - 42
+        top = 54
+        bottom = height - max(92, self._label_font_size() * 4 + 54)
+        if right <= left + 40:
+            right = left + 40
+        if bottom <= top + 40:
+            bottom = top + 40
+        title_font = self._export_font(14 * scale, bold=True)
+        axis_font = self._export_font(11 * scale, bold=True)
+        tick_font = self._export_font(9 * scale)
+        label_font = self._export_font(self._label_font_size() * scale, bold=self.label_bold_var.get())
+        value_font = self._export_font(self._value_font_size() * scale, bold=self.value_bold_var.get())
+        self._draw_export_centered_text(draw, s(width / 2), s(24), self._chart_title(), title_font, "#222222")
+
+        if not entries:
+            draw.text((s(24), s(24)), "No Target values to plot.", fill="#666666", font=tick_font)
+            self._draw_export_text_annotations(draw, scale)
+            return image
+
+        values = [float(entry["value"]) for entry in entries]
+        error_bounds = [
+            (value - self._entry_error(entry), value + self._entry_error(entry))
+            for value, entry in zip(values, entries)
+        ]
+        min_value = min(0.0, *(lower for lower, _upper in error_bounds))
+        max_value = max(0.0, *(upper for _lower, upper in error_bounds))
+        if math.isclose(min_value, max_value):
+            max_value = min_value + 1.0
+        padding = (max_value - min_value) * 0.12
+        min_value -= padding
+        max_value += padding
+
+        def y_to_px(value: float) -> float:
+            return bottom - (value - min_value) * (bottom - top) / (max_value - min_value)
+
+        draw.rectangle((s(left), s(top), s(right), s(bottom)), fill=self.background_color_var.get(), outline="#d0d0d0")
+        self._draw_export_backgrounds(draw, entries, left, right, top, bottom, scale)
+        zero_y = y_to_px(0.0)
+        draw.line((s(left), s(zero_y), s(right), s(zero_y)), fill="#222222", width=s(2))
+        draw.line((s(left), s(top), s(left), s(bottom)), fill="#222222", width=s(2))
+        draw.line((s(right), s(top), s(right), s(bottom)), fill="#222222", width=s(1))
+        draw.line((s(left), s(top), s(right), s(top)), fill="#222222", width=s(1))
+        self._draw_export_rotated_text(image, s(26), s((top + bottom) / 2), self.y_axis_title, axis_font)
+
+        tick_count = 6
+        for index in range(tick_count + 1):
+            value = min_value + (max_value - min_value) * index / tick_count
+            y = y_to_px(value)
+            draw.line((s(left - 5), s(y), s(right), s(y)), fill="#dddddd", width=s(1))
+            draw.line((s(left - 5), s(y), s(left), s(y)), fill="#444444", width=s(1))
+            self._draw_export_right_text(draw, s(left - 10), s(y), f"{value:.3f}", tick_font, "#555555")
+
+        slot_width = (right - left) / max(len(entries), 1)
+        bar_width = max(18.0, min(58.0, slot_width * 0.55))
+        for index, entry in enumerate(entries):
+            value = float(entry["value"])
+            error = self._entry_error(entry)
+            x = left + slot_width * (index + 0.5)
+            y = y_to_px(value)
+            bar_top = min(y, zero_y)
+            bar_bottom = max(y, zero_y)
+            draw.rectangle(
+                (s(x - bar_width / 2), s(bar_top), s(x + bar_width / 2), s(bar_bottom)),
+                fill=self._bar_color(entry),
+            )
+            if error > 0:
+                error_top = y_to_px(value + error)
+                error_bottom = y_to_px(value - error)
+                cap = min(bar_width * 0.45, 12.0)
+                draw.line((s(x), s(error_top), s(x), s(error_bottom)), fill="#111111", width=s(1.2))
+                draw.line((s(x - cap), s(error_top), s(x + cap), s(error_top)), fill="#111111", width=s(1.2))
+                draw.line((s(x - cap), s(error_bottom), s(x + cap), s(error_bottom)), fill="#111111", width=s(1.2))
+            else:
+                error_top = bar_top
+                error_bottom = bar_bottom
+            value_y = min(bar_top, error_top) - (self._value_font_size() + 5) if value >= 0 else max(bar_bottom, error_bottom) + (self._value_font_size() + 5)
+            self._draw_export_centered_text(draw, s(x), s(value_y), f"{value:+.3f}", value_font, "#111111")
+            label = self._wrap_label(str(entry["name"]), max(7, int(slot_width / max(self._label_font_size() * 0.58, 1))))
+            self._draw_export_centered_multiline(draw, s(x), s(bottom + 6), label, label_font, "#333333")
+            self._draw_export_centered_text(draw, s(x), s(height - 22), str(index + 1), tick_font, "#111111")
+        self._draw_export_text_annotations(draw, scale)
+        return image
+
+    def _entry_error(self, entry: dict[str, object]) -> float:
+        if not self.show_error_bars_var.get():
+            return 0.0
+        try:
+            return max(0.0, float(entry.get("error", 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _export_font(self, size: int, bold: bool = False):
+        candidates = [
+            "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, max(1, int(size)))
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    def _draw_export_centered_text(self, draw, x: int, y: int, text: str, font, fill: str) -> None:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text((x - (bbox[2] - bbox[0]) / 2, y - (bbox[3] - bbox[1]) / 2), text, fill=fill, font=font)
+
+    def _draw_export_right_text(self, draw, x: int, y: int, text: str, font, fill: str) -> None:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        draw.text((x - (bbox[2] - bbox[0]), y - (bbox[3] - bbox[1]) / 2), text, fill=fill, font=font)
+
+    def _draw_export_centered_multiline(self, draw, x: int, y: int, text: str, font, fill: str) -> None:
+        bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2, align="center")
+        draw.multiline_text((x - (bbox[2] - bbox[0]) / 2, y), text, fill=fill, font=font, spacing=2, align="center")
+
+    def _draw_export_text_annotations(self, draw, scale: int) -> None:
+        for annotation in self.text_annotations:
+            text = str(annotation.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                x = float(annotation.get("x", 120.0)) * scale
+                y = float(annotation.get("y", 80.0)) * scale
+                font_size = int(float(annotation.get("font_size", 11))) * scale
+            except (TypeError, ValueError):
+                x, y, font_size = 120.0 * scale, 80.0 * scale, 11 * scale
+            font = self._export_font(max(6, min(32 * scale, font_size)), bold=bool(annotation.get("bold", True)))
+            bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=2 * scale, align="center")
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            pad_x, pad_y = 6 * scale, 4 * scale
+            left = x - text_width / 2 - pad_x
+            top = y - text_height / 2 - pad_y
+            right = x + text_width / 2 + pad_x
+            bottom = y + text_height / 2 + pad_y
+            draw.rectangle((left, top, right, bottom), fill="#ffffff", outline="#111111", width=max(1, scale))
+            draw.multiline_text(
+                (x - text_width / 2, y - text_height / 2),
+                text,
+                fill="#111111",
+                font=font,
+                spacing=2 * scale,
+                align="center",
+            )
+
+    def _draw_export_rotated_text(self, image, x: int, y: int, text: str, font) -> None:
+        bbox = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textbbox((0, 0), text, font=font)
+        text_image = Image.new("RGBA", (bbox[2] - bbox[0] + 8, bbox[3] - bbox[1] + 8), (255, 255, 255, 0))
+        text_draw = ImageDraw.Draw(text_image)
+        text_draw.text((4, 4), text, fill="#222222", font=font)
+        rotated = text_image.rotate(90, expand=True)
+        image.paste(rotated, (int(x - rotated.width / 2), int(y - rotated.height / 2)), rotated)
+
+    def _draw_export_backgrounds(self, draw, entries: list[dict[str, object]], left: float, right: float, top: float, bottom: float, scale: int) -> None:
+        slot_width = (right - left) / max(len(entries), 1)
+        start_index = 0
+        while start_index < len(entries):
+            target = str(entries[start_index].get("target", "")).strip()
+            end_index = start_index
+            while end_index + 1 < len(entries) and str(entries[end_index + 1].get("target", "")).strip() == target:
+                end_index += 1
+            x1 = left + slot_width * start_index
+            x2 = left + slot_width * (end_index + 1)
+            draw.rectangle(
+                (int(x1 * scale), int(top * scale), int(x2 * scale), int(bottom * scale)),
+                fill=self.background_color_var.get(),
+                outline="#777777",
+            )
+            start_index = end_index + 1
+
+    def draw_chart(self) -> None:
+        self.canvas.delete("all")
+        width = max(self.canvas.winfo_width(), 560)
+        height = max(self.canvas.winfo_height(), 360)
+        entries = self._visible_entries()
+        if not entries:
+            self.canvas.create_text(
+                24,
+                24,
+                anchor="nw",
+                text="No Target values to plot.",
+                fill="#666666",
+                font=("Segoe UI", 11),
+            )
+            self._draw_text_annotations()
+            return
+
+        left, right = 82, width - 42
+        top = 54
+        bottom = height - max(92, self._label_font_size() * 4 + 54)
+        if right <= left + 40:
+            right = left + 40
+        if bottom <= top + 40:
+            bottom = top + 40
+
+        values = [float(entry["value"]) for entry in entries]
+        error_bounds = [
+            (value - self._entry_error(entry), value + self._entry_error(entry))
+            for value, entry in zip(values, entries)
+        ]
+        min_value = min(0.0, *(lower for lower, _upper in error_bounds))
+        max_value = max(0.0, *(upper for _lower, upper in error_bounds))
+        if math.isclose(min_value, max_value):
+            max_value = min_value + 1.0
+        padding = (max_value - min_value) * 0.12
+        min_value -= padding
+        max_value += padding
+
+        def y_to_canvas(value: float) -> float:
+            return bottom - (value - min_value) * (bottom - top) / (max_value - min_value)
+
+        zero_y = y_to_canvas(0.0)
+        self.canvas.create_text(
+            width / 2,
+            24,
+            text=self._chart_title(),
+            font=("Segoe UI", 14, "bold"),
+            fill="#222222",
+        )
+        self.canvas.create_rectangle(left, top, right, bottom, outline="#d0d0d0", fill=self.background_color_var.get())
+        self._draw_target_backgrounds(entries, left, right, top, bottom)
+        self.canvas.create_line(left, zero_y, right, zero_y, fill="#222222", width=2)
+        self.canvas.create_line(left, top, left, bottom, fill="#222222", width=2)
+        self.canvas.create_line(right, top, right, bottom, fill="#222222", width=1)
+        self.canvas.create_line(left, top, right, top, fill="#222222", width=1)
+        self.canvas.create_text(
+            26,
+            (top + bottom) / 2,
+            text=self.y_axis_title,
+            angle=90,
+            font=("Segoe UI", 11, "bold"),
+            fill="#222222",
+        )
+
+        tick_count = 6
+        for index in range(tick_count + 1):
+            value = min_value + (max_value - min_value) * index / tick_count
+            y = y_to_canvas(value)
+            self.canvas.create_line(left - 5, y, right, y, fill="#dddddd")
+            self.canvas.create_line(left - 5, y, left, y, fill="#444444")
+            self.canvas.create_text(
+                left - 10,
+                y,
+                text=f"{value:.3f}",
+                anchor="e",
+                fill="#555555",
+                font=("Segoe UI", 9),
+            )
+
+        slot_width = (right - left) / max(len(entries), 1)
+        bar_width = max(18.0, min(58.0, slot_width * 0.55))
+        label_font = ("Segoe UI", self._label_font_size(), "bold" if self.label_bold_var.get() else "normal")
+        value_font = ("Segoe UI", self._value_font_size(), "bold" if self.value_bold_var.get() else "normal")
+        for index, entry in enumerate(entries):
+            value = float(entry["value"])
+            error = self._entry_error(entry)
+            x = left + slot_width * (index + 0.5)
+            y = y_to_canvas(value)
+            bar_top = min(y, zero_y)
+            bar_bottom = max(y, zero_y)
+            self.canvas.create_rectangle(
+                x - bar_width / 2,
+                bar_top,
+                x + bar_width / 2,
+                bar_bottom,
+                fill=self._bar_color(entry),
+                outline="",
+            )
+            if error > 0:
+                error_top = y_to_canvas(value + error)
+                error_bottom = y_to_canvas(value - error)
+                cap = min(bar_width * 0.45, 12.0)
+                self.canvas.create_line(x, error_top, x, error_bottom, fill="#111111", width=1.4)
+                self.canvas.create_line(x - cap, error_top, x + cap, error_top, fill="#111111", width=1.4)
+                self.canvas.create_line(x - cap, error_bottom, x + cap, error_bottom, fill="#111111", width=1.4)
+            else:
+                error_top = bar_top
+                error_bottom = bar_bottom
+            value_y = min(bar_top, error_top) - (self._value_font_size() + 5) if value >= 0 else max(bar_bottom, error_bottom) + (self._value_font_size() + 5)
+            self.canvas.create_text(
+                x,
+                value_y,
+                text=f"{value:+.3f}",
+                fill="#111111",
+                font=value_font,
+            )
+            label = self._wrap_label(str(entry["name"]), max(7, int(slot_width / max(self._label_font_size() * 0.58, 1))))
+            self.canvas.create_text(
+                x,
+                bottom + 6,
+                text=label,
+                angle=0,
+                anchor="n",
+                justify="center",
+                fill="#333333",
+                font=label_font,
+            )
+            self.canvas.create_text(
+                x,
+                height - 22,
+                text=str(index + 1),
+                anchor="n",
+                fill="#111111",
+                font=("Segoe UI", 9),
+            )
+        self._draw_text_annotations()
+
+    def _draw_text_annotations(self) -> None:
+        self._annotation_hitboxes = []
+        for index, annotation in enumerate(self.text_annotations):
+            text = str(annotation.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                x = float(annotation.get("x", 120.0))
+                y = float(annotation.get("y", 80.0))
+                font_size = int(float(annotation.get("font_size", 11)))
+            except (TypeError, ValueError):
+                x, y, font_size = 120.0, 80.0, 11
+            font_size = max(6, min(32, font_size))
+            weight = "bold" if bool(annotation.get("bold", True)) else "normal"
+            tag = f"bar_text_annotation_{index}"
+            text_id = self.canvas.create_text(
+                x,
+                y,
+                text=text,
+                fill="#111111",
+                font=("Segoe UI", font_size, weight),
+                anchor="center",
+                justify="center",
+                tags=(tag,),
+            )
+            bbox = self.canvas.bbox(text_id)
+            if bbox is None:
+                continue
+            x1, y1, x2, y2 = bbox
+            pad_x, pad_y = 6, 4
+            box = (x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y)
+            rect_id = self.canvas.create_rectangle(*box, fill="#ffffff", outline="#111111", tags=(tag,))
+            self.canvas.tag_lower(rect_id, text_id)
+            self._annotation_hitboxes.append((index, box))
+
+    def _start_annotation_drag(self, event: tk.Event) -> None:
+        for index, (x1, y1, x2, y2) in reversed(self._annotation_hitboxes):
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                self._drag_annotation_index = index
+                annotation = self.text_annotations[index]
+                self._drag_offset = (
+                    float(annotation.get("x", event.x)) - float(event.x),
+                    float(annotation.get("y", event.y)) - float(event.y),
+                )
+                return
+        self._drag_annotation_index = None
+
+    def _drag_annotation(self, event: tk.Event) -> None:
+        if self._drag_annotation_index is None:
+            return
+        if not (0 <= self._drag_annotation_index < len(self.text_annotations)):
+            return
+        self.text_annotations[self._drag_annotation_index]["x"] = float(event.x + self._drag_offset[0])
+        self.text_annotations[self._drag_annotation_index]["y"] = float(event.y + self._drag_offset[1])
+        self.draw_chart()
+
+    def _end_annotation_drag(self, _event: tk.Event) -> None:
+        self._drag_annotation_index = None
+
+    def _draw_target_backgrounds(
+        self,
+        entries: list[dict[str, object]],
+        left: float,
+        right: float,
+        top: float,
+        bottom: float,
+    ) -> None:
+        slot_width = (right - left) / max(len(entries), 1)
+        start_index = 0
+        while start_index < len(entries):
+            target = str(entries[start_index].get("target", "")).strip()
+            color = self.background_color_var.get().strip() or str(entries[start_index].get("target_color", "#dff4ff")).strip() or "#dff4ff"
+            end_index = start_index
+            while end_index + 1 < len(entries) and str(entries[end_index + 1].get("target", "")).strip() == target:
+                end_index += 1
+            x1 = left + slot_width * start_index
+            x2 = left + slot_width * (end_index + 1)
+            self.canvas.create_rectangle(x1, top, x2, bottom, fill=color, outline="#777777")
+            start_index = end_index + 1
+
+    def _soft_fill_color(self, color: str) -> str:
+        text = color.strip()
+        if not text.startswith("#") or len(text) not in {4, 7}:
+            return text or "#dff4ff"
+        if len(text) == 4:
+            text = "#" + "".join(char * 2 for char in text[1:])
+        try:
+            red = int(text[1:3], 16)
+            green = int(text[3:5], 16)
+            blue = int(text[5:7], 16)
+        except ValueError:
+            return "#dff4ff"
+        red = int(red + (255 - red) * 0.35)
+        green = int(green + (255 - green) * 0.35)
+        blue = int(blue + (255 - blue) * 0.35)
+        return f"#{red:02x}{green:02x}{blue:02x}"
+
+    def _chart_title(self) -> str:
+        target = self.target_var.get().strip()
+        if target and target != "All":
+            return target
+        return "Target LSPR Bar Chart"
+
+
 class AverageValuesChartPanel(ttk.Frame):
     def __init__(self, parent: tk.Misc, refresh_callback=None) -> None:
         super().__init__(parent)
@@ -51,8 +764,10 @@ class AverageValuesChartPanel(ttk.Frame):
         self._series_colors: dict[str, str] = {}
         self._series_widths: dict[str, str] = {}
         self._stage_regions: list[tuple[float, float, str, str]] = []
+        self._target_regions: list[tuple[float, float, str, str]] = []
         self._annotations: list[dict[str, object]] = []
         self._lspr_shift_items: list[dict[str, object]] = []
+        self._lspr_bar_entries: list[dict[str, object]] = []
         self._right_label_positions: dict[str, tuple[float, float]] = {}
         self._draggables: list[dict[str, object]] = []
         self._drag_target: dict[str, object] | None = None
@@ -76,6 +791,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self.y_max_var = tk.StringVar()
         self.text_var = tk.StringVar()
         self.running_buffer_var = tk.StringVar(value="5*SSC")
+        self.target_stage_var = tk.StringVar()
+        self.lspr_bar_target_var = tk.StringVar()
         self.lspr_font_size_var = tk.StringVar(value="10")
         self.title_var = tk.StringVar(value="")
         self.x_title_var = tk.StringVar(value="Time [s]")
@@ -96,6 +813,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self.format_preset_var = tk.StringVar(value="")
         self._format_presets: dict[str, dict] = {}
         self.running_buffer_box: ttk.Combobox | None = None
+        self.target_stage_box: ttk.Combobox | None = None
+        self.lspr_bar_target_box: ttk.Combobox | None = None
         self.show_points_var = tk.BooleanVar(value=True)
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
@@ -250,10 +969,19 @@ class AverageValuesChartPanel(ttk.Frame):
         )
         self.running_buffer_box.grid(row=2, column=1, padx=(0, 8), pady=(6, 0), sticky="w")
         self.running_buffer_box.bind("<Return>", lambda _event: self.calculate_lspr_shift_for_all_series())
-        self.running_buffer_box.bind("<<ComboboxSelected>>", lambda _event: self.clear_lspr_shift())
+        self.running_buffer_box.bind("<<ComboboxSelected>>", self._on_running_buffer_change)
         ttk.Button(action_bar, text="LSPR Shift", command=self.calculate_lspr_shift_for_all_series, width=APP_BUTTON_WIDTH).grid(row=2, column=2, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Button(action_bar, text="Clear LSPR", command=self.clear_lspr_shift, width=APP_BUTTON_WIDTH).grid(row=2, column=3, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Label(action_bar, text="LSPR Font").grid(row=2, column=4, padx=(8, 4), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="Bar Target").grid(row=2, column=3, padx=(0, 4), pady=(6, 0), sticky="w")
+        self.lspr_bar_target_box = ttk.Combobox(
+            action_bar,
+            textvariable=self.lspr_bar_target_var,
+            width=18,
+            state="disabled",
+        )
+        self.lspr_bar_target_box.grid(row=2, column=4, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="LSPR Bar Chart", command=self.show_lspr_shift_bar_chart, width=APP_BUTTON_WIDTH).grid(row=2, column=5, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Clear LSPR", command=self.clear_lspr_shift, width=APP_BUTTON_WIDTH).grid(row=2, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="LSPR Font").grid(row=2, column=7, padx=(8, 4), pady=(6, 0), sticky="w")
         lspr_font_spin = ttk.Spinbox(
             action_bar,
             from_=7,
@@ -262,9 +990,18 @@ class AverageValuesChartPanel(ttk.Frame):
             width=5,
             command=self.draw_chart,
         )
-        lspr_font_spin.grid(row=2, column=5, padx=(0, 8), pady=(6, 0), sticky="w")
+        lspr_font_spin.grid(row=2, column=8, padx=(0, 8), pady=(6, 0), sticky="w")
         lspr_font_spin.bind("<Return>", lambda _event: self.draw_chart())
         lspr_font_spin.bind("<FocusOut>", lambda _event: self.draw_chart())
+        ttk.Label(action_bar, text="Target").grid(row=3, column=0, padx=(0, 4), pady=(6, 0), sticky="w")
+        self.target_stage_box = ttk.Combobox(
+            action_bar,
+            textvariable=self.target_stage_var,
+            width=22,
+            state="readonly",
+        )
+        self.target_stage_box.grid(row=3, column=1, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Target", command=self.calculate_target_shift_for_selected_stage, width=APP_BUTTON_WIDTH).grid(row=3, column=2, padx=(0, 8), pady=(6, 0), sticky="w")
         self._load_format_presets()
 
         self.canvas = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground="#d0d0d0")
@@ -286,6 +1023,7 @@ class AverageValuesChartPanel(ttk.Frame):
         headers: list[str],
         selected_y_names: list[str] | None = None,
         stage_regions: list[tuple[float, float, str, str]] | None = None,
+        target_regions: list[tuple[float, float, str, str]] | None = None,
     ) -> None:
         self.data = [list(row) for row in data]
         self.headers = headers[:]
@@ -294,6 +1032,10 @@ class AverageValuesChartPanel(ttk.Frame):
             self.stage_text_var.set(
                 "\n".join(f"{start},{end},{label},{color}" for start, end, label, color in self._stage_regions)
             )
+        if target_regions is not None:
+            self._target_regions = target_regions[:]
+        self._refresh_target_stage_options()
+        self._refresh_lspr_bar_target_options()
         self._refresh_running_buffer_options()
         if selected_y_names is not None:
             self._selected_y_cache = [name for name in selected_y_names if name in self.headers[1:]]
@@ -303,6 +1045,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._pan_anchor = None
         self._pan_bounds = None
         self._lspr_shift_items = []
+        self._lspr_bar_entries = []
         self._populate_controls()
         self.schedule_draw()
 
@@ -312,19 +1055,23 @@ class AverageValuesChartPanel(ttk.Frame):
         self._series = []
         self._selected_y_cache = []
         self._stage_regions = []
+        self._target_regions = []
         self._annotations = []
         self._lspr_shift_items = []
+        self._lspr_bar_entries = []
         self._right_label_positions = {}
         self._draggables = []
         self._drag_target = None
         self._view_bounds = None
         self._refresh_running_buffer_options()
+        self._refresh_target_stage_options()
         self.canvas.delete("all")
         self._draw_message("Import Average Values to plot curves.")
 
     def clear_plot(self) -> None:
         self._series = []
         self._lspr_shift_items = []
+        self._lspr_bar_entries = []
         self._view_bounds = None
         self._plot_rect = None
         self.canvas.delete("all")
@@ -332,7 +1079,377 @@ class AverageValuesChartPanel(ttk.Frame):
 
     def clear_lspr_shift(self) -> None:
         self._lspr_shift_items = []
+        self._lspr_bar_entries = []
+        self._refresh_lspr_bar_target_options()
         self.draw_chart()
+
+    def _on_running_buffer_change(self, _event=None) -> None:
+        self._lspr_shift_items = []
+        self._lspr_bar_entries = []
+        self._refresh_lspr_bar_target_options()
+
+    def show_lspr_shift_bar_chart(self) -> None:
+        entries = self._lspr_bar_entries or self._build_target_bar_entries()
+        selected_target = self.lspr_bar_target_var.get().strip()
+        if selected_target:
+            filtered_entries = [
+                entry
+                for entry in entries
+                if self._same_target_label(str(entry.get("target", "")), selected_target)
+            ]
+            if not filtered_entries:
+                filtered_entries = self._build_bar_entries_for_target_by_position(selected_target)
+            entries = filtered_entries
+        if not entries:
+            detail = self._lspr_bar_status_detail()
+            messagebox.showinfo(
+                "No LSPR Shift Data",
+                f"Click LSPR Shift first, then create the bar chart from the displayed Target values.\n\n{detail}",
+            )
+            return
+        window = LSPRShiftBarChartWindow(
+            self,
+            entries,
+            initial_target=selected_target,
+            y_axis_title=self._locked_y_axis_title(),
+        )
+        window.focus_set()
+
+    def _same_target_label(self, left: str, right: str) -> bool:
+        left_key = self._normalize_stage_name(left)
+        right_key = self._normalize_stage_name(right)
+        return bool(left_key and right_key and (left_key == right_key or left_key in right_key or right_key in left_key))
+
+    def _refresh_lspr_bar_target_options(self) -> None:
+        if self.lspr_bar_target_box is None:
+            return
+        entries = self._lspr_bar_entries
+        targets: list[str] = []
+        seen: set[str] = set()
+        if entries:
+            source = [str(entry.get("target", "")).strip() for entry in entries]
+        else:
+            source = [
+                str(label).strip()
+                for _start, _end, label, _color in self._target_region_candidates()
+            ]
+        for target in source:
+            if target and target not in seen:
+                seen.add(target)
+                targets.append(target)
+        self.lspr_bar_target_box["values"] = targets
+        if targets:
+            current = self.lspr_bar_target_var.get().strip()
+            if current not in targets:
+                self.lspr_bar_target_var.set(targets[0])
+            self.lspr_bar_target_box.configure(state="readonly")
+        else:
+            self.lspr_bar_target_var.set("")
+            self.lspr_bar_target_box.configure(state="disabled")
+
+    def _lspr_bar_status_detail(self) -> str:
+        shift_count = sum(1 for item in self._lspr_shift_items if item.get("kind") == "shift")
+        target_count = sum(
+            1
+            for _start, _end, label, _color in (self._target_regions or self._stage_regions)
+            if "target" in self._normalize_stage_name(str(label))
+        )
+        entry_count = len(self._lspr_bar_entries or self._build_target_bar_entries())
+        selected_target = self.lspr_bar_target_var.get().strip() or "None"
+        return (
+            f"Detected LSPR Shift labels: {shift_count}. "
+            f"Detected Target regions: {target_count}. "
+            f"Generated bar entries: {entry_count}. "
+            f"Selected Bar Target: {selected_target}."
+        )
+
+    def _build_target_bar_entries(self) -> list[dict[str, object]]:
+        shift_items = [item for item in self._lspr_shift_items if item.get("kind") == "shift"]
+        if not shift_items:
+            return []
+
+        entries: list[dict[str, object]] = []
+        for item in shift_items:
+            try:
+                delta = float(item.get("delta", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            target_label = str(item.get("target", "")).strip()
+            target_color = str(item.get("target_color", "")).strip()
+            if not target_label:
+                target_region = self._target_region_for_shift_item(item)
+                if target_region is None:
+                    continue
+                _start, _end, target_label, target_color = target_region
+
+            if not target_label or "target" not in self._normalize_stage_name(target_label):
+                continue
+            entries.append(
+                {
+                    "target": target_label,
+                    "target_color": target_color or "#dff4ff",
+                    "name": str(item.get("series_label") or item.get("series_name") or "LSPR Shift"),
+                    "value": delta,
+                    "error": self._item_error(item),
+                    "color": str(item.get("series_color", "#f4bd82")),
+                }
+            )
+        return entries
+
+    def _build_bar_entries_for_target_by_position(self, selected_target: str) -> list[dict[str, object]]:
+        target_region = self._target_region_for_label(selected_target)
+        if target_region is None:
+            return []
+        start, end, target_label, target_color = target_region
+        center = (start + end) / 2
+
+        best_by_series: dict[str, tuple[float, dict[str, object]]] = {}
+        for item in self._lspr_shift_items:
+            if item.get("kind") != "shift":
+                continue
+            try:
+                x_value = float(item.get("x", center))
+                delta = float(item.get("delta", 0.0))
+            except (TypeError, ValueError):
+                continue
+            distance = 0.0 if start <= x_value <= end else abs(x_value - center)
+            series_label = str(item.get("series_label") or item.get("series_name") or "LSPR Shift")
+            candidate = {
+                "target": target_label,
+                "target_color": target_color or "#dff4ff",
+                "name": series_label,
+                "value": delta,
+                "error": self._item_error(item),
+                "color": str(item.get("series_color", "#f4bd82")),
+            }
+            current = best_by_series.get(series_label)
+            if current is None or distance < current[0]:
+                best_by_series[series_label] = (distance, candidate)
+        return [entry for _distance, entry in best_by_series.values()]
+
+    def _build_all_target_bar_entries_by_position(self) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for _start, _end, target_label, _target_color in self._target_region_candidates():
+            entries.extend(self._build_bar_entries_for_target_by_position(target_label))
+        return entries
+
+    def _build_all_target_bar_entries_by_transition(self) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for target_region in self._target_region_candidates():
+            entries.extend(self._build_bar_entries_for_target_transition(target_region))
+        return entries
+
+    def _build_bar_entries_for_target_transition(
+        self,
+        target_region: tuple[float, float, str, str],
+    ) -> list[dict[str, object]]:
+        start, end, target_label, target_color = target_region
+        buffer_pair = self._buffer_indexes_around_region(start, end)
+        if buffer_pair is None:
+            return []
+        previous_index, current_index = buffer_pair
+        entries: list[dict[str, object]] = []
+        for item in self._lspr_shift_items:
+            if item.get("kind") != "shift":
+                continue
+            try:
+                from_index = int(item.get("from", -1))
+                to_index = int(item.get("to", -1))
+                delta = float(item.get("delta", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if from_index != previous_index or to_index != current_index:
+                continue
+            entries.append(
+                {
+                    "target": target_label,
+                    "target_color": target_color or "#dff4ff",
+                    "name": str(item.get("series_label") or item.get("series_name") or "LSPR Shift"),
+                    "value": delta,
+                    "error": self._item_error(item),
+                    "color": str(item.get("series_color", "#f4bd82")),
+                }
+            )
+        return entries
+
+    def _item_error(self, item: dict[str, object]) -> float:
+        try:
+            return max(0.0, float(item.get("error", 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _buffer_indexes_around_region(self, start: float, end: float) -> tuple[int, int] | None:
+        buffers = [
+            (index + 1, float(region_start), float(region_end), str(label))
+            for index, (region_start, region_end, label, _color) in enumerate(self._running_buffer_regions())
+        ]
+        previous = [region for region in buffers if region[2] <= start + 1e-9]
+        following = [region for region in buffers if region[1] >= end - 1e-9]
+        if not previous or not following:
+            return None
+        previous_index = max(previous, key=lambda region: region[2])[0]
+        current_index = min(following, key=lambda region: region[1])[0]
+        if current_index <= previous_index:
+            return None
+        return previous_index, current_index
+
+    def _running_buffer_regions(self) -> list[tuple[float, float, str, str]]:
+        label = self.running_buffer_var.get().strip() or "5*SSC"
+        return [
+            (float(start), float(end), str(region_label), str(color))
+            for start, end, region_label, color in self._stage_regions
+            if self._stage_label_matches(str(region_label), label)
+        ]
+
+    def _target_region_for_label(self, selected_target: str) -> tuple[float, float, str, str] | None:
+        candidates = self._target_region_candidates()
+        for region in candidates:
+            if self._same_target_label(region[2], selected_target):
+                return region
+        if self.lspr_bar_target_box is not None:
+            values = list(self.lspr_bar_target_box["values"])
+            try:
+                index = values.index(selected_target)
+            except ValueError:
+                index = -1
+            if 0 <= index < len(candidates):
+                return candidates[index]
+        return None
+
+    def _target_region_for_shift_item(self, item: dict[str, object]) -> tuple[float, float, str, str] | None:
+        target_regions = self._target_region_candidates()
+        if not target_regions:
+            return None
+
+        try:
+            x_value = float(item.get("x", 0.0))
+        except (TypeError, ValueError):
+            x_value = None
+
+        if x_value is not None:
+            containing = self._target_region_for_shift_x(x_value, target_regions)
+            if containing is not None:
+                return containing
+
+        series_name = str(item.get("series_name", ""))
+        try:
+            previous_index = int(item.get("from", -1))
+            current_index = int(item.get("to", -1))
+        except (TypeError, ValueError):
+            previous_index = -1
+            current_index = -1
+
+        transition_region = self._target_region_for_lspr_transition(previous_index, current_index)
+        if transition_region is not None:
+            return transition_region
+
+        previous_segment = self._lspr_segment(series_name, previous_index)
+        current_segment = self._lspr_segment(series_name, current_index)
+        if previous_segment is not None and current_segment is not None:
+            try:
+                interval_start = float(previous_segment.get("stage_end", previous_segment.get("end", 0.0)))
+                interval_end = float(current_segment.get("stage_start", current_segment.get("start", 0.0)))
+            except (TypeError, ValueError):
+                interval_start = None
+                interval_end = None
+            if interval_start is not None and interval_end is not None:
+                between = self._target_region_between(interval_start, interval_end)
+                if between is not None:
+                    return between
+                midpoint = (interval_start + interval_end) / 2
+                nearest = self._nearest_target_region(midpoint, target_regions)
+                if nearest is not None:
+                    return nearest
+
+        if x_value is not None:
+            return self._nearest_target_region(x_value, target_regions)
+        return None
+
+    def _target_region_for_lspr_transition(self, previous_index: int, current_index: int) -> tuple[float, float, str, str] | None:
+        if previous_index <= 0 or current_index <= previous_index:
+            return None
+        buffer_regions = [
+            (float(start), float(end), str(label), str(color))
+            for start, end, label, color in self._stage_regions
+            if self._stage_label_matches(str(label), self.running_buffer_var.get().strip() or "5*SSC")
+        ]
+        if previous_index > len(buffer_regions) or current_index > len(buffer_regions):
+            return None
+        previous_region = buffer_regions[previous_index - 1]
+        current_region = buffer_regions[current_index - 1]
+        return self._target_region_between(previous_region[1], current_region[0])
+
+    def _lspr_segment(self, series_name: str, index: int) -> dict[str, object] | None:
+        for item in self._lspr_shift_items:
+            if item.get("kind") != "segment":
+                continue
+            if str(item.get("series_name", "")) != series_name:
+                continue
+            try:
+                item_index = int(item.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if item_index == index:
+                return item
+        return None
+
+    def _target_region_between(self, start: float, end: float) -> tuple[float, float, str, str] | None:
+        candidate_regions = self._target_region_candidates()
+        candidates = [
+            region
+            for region in candidate_regions
+            if region[1] >= start - 1e-9 and region[0] <= end + 1e-9
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda region: min(region[1], end) - max(region[0], start))
+
+    def _target_region_candidates(self) -> list[tuple[float, float, str, str]]:
+        regions = self._target_regions or self._stage_regions
+        candidates: list[tuple[float, float, str, str]] = []
+        for region_start, region_end, label, color in regions:
+            label_text = str(label)
+            if "target" not in self._normalize_stage_name(label_text):
+                continue
+            try:
+                candidates.append((float(region_start), float(region_end), label_text, str(color)))
+            except (TypeError, ValueError):
+                continue
+        return candidates
+
+    def _nearest_target_region(
+        self,
+        x_value: float,
+        target_regions: list[tuple[float, float, str, str]],
+    ) -> tuple[float, float, str, str] | None:
+        if not target_regions:
+            return None
+
+        def distance(region: tuple[float, float, str, str]) -> float:
+            start, end, _label, _color = region
+            if start <= x_value <= end:
+                return 0.0
+            return min(abs(x_value - start), abs(x_value - end))
+
+        nearest = min(target_regions, key=distance)
+        nearest_distance = distance(nearest)
+        widths = [max(end - start, 1.0) for start, end, _label, _color in target_regions]
+        tolerance = max(widths) * 1.25
+        if nearest_distance <= tolerance:
+            return nearest
+        return None
+
+    def _target_region_for_shift_x(
+        self,
+        x_value: float,
+        target_regions: list[tuple[float, float, str, str]],
+    ) -> tuple[float, float, str, str] | None:
+        for region in target_regions:
+            start, end, _label, _color = region
+            if start <= x_value <= end:
+                return region
+        return None
 
     def save_format_preset(self) -> None:
         name = self._ask_preset_name(self.format_preset_var.get().strip(), mode="save")
@@ -648,6 +1765,7 @@ class AverageValuesChartPanel(ttk.Frame):
             self.stage_text_var.set(stage_text_value)
             self._parse_stage_regions()
             self._refresh_running_buffer_options()
+            self._refresh_target_stage_options()
             self.tick_font_size_var.set(str(self._clamped_int_text(self.tick_font_size_var, 9, 7, 24)))
             if self.grid_style_var.get() not in {"solid", "dash", "dot", "dash dot"}:
                 self.grid_style_var.set("solid")
@@ -737,6 +1855,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._plot_rect = (left, top, right, bottom)
         self.canvas.create_rectangle(left, top, right, bottom, outline="#d0d0d0", fill="#ffffff")
         self._draw_stage_regions(left, top, right, bottom, x_min, x_max)
+        self._draw_lspr_sample_windows(left, top, right, bottom, x_min, x_max)
         if self.show_grid_var.get():
             self._draw_grid(left, top, right, bottom)
         self._draw_axes(left, top, right, bottom, x_min, x_max, y_min, y_max)
@@ -760,6 +1879,7 @@ class AverageValuesChartPanel(ttk.Frame):
 
     def _on_plot_selection_change(self, _event: object | None = None) -> None:
         self._lspr_shift_items = []
+        self._lspr_bar_entries = []
         self.draw_chart()
 
     def _refresh_running_buffer_options(self) -> None:
@@ -780,6 +1900,31 @@ class AverageValuesChartPanel(ttk.Frame):
         if labels and (not current or not any(self._stage_label_matches(label, current) for label in labels)):
             preferred = next((label for label in labels if self._stage_label_matches(label, "5*SSC")), labels[0])
             self.running_buffer_var.set(preferred)
+
+    def _refresh_target_stage_options(self) -> None:
+        if self.target_stage_box is None:
+            return
+        labels: list[str] = []
+        seen: set[str] = set()
+        for _start, _end, label, _color in self._stage_regions:
+            display_label = str(label).strip()
+            if not display_label:
+                continue
+            key = self._normalize_stage_name(display_label)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            labels.append(display_label)
+        self.target_stage_box["values"] = labels
+        if labels:
+            current = self.target_stage_var.get().strip()
+            if current not in labels:
+                preferred = next((label for label in labels if "target" in self._normalize_stage_name(label)), labels[0])
+                self.target_stage_var.set(preferred)
+            self.target_stage_box.configure(state="readonly")
+        else:
+            self.target_stage_var.set("")
+            self.target_stage_box.configure(state="disabled")
 
     def calculate_lspr_shift_for_all_series(self) -> None:
         self.draw_chart()
@@ -803,10 +1948,207 @@ class AverageValuesChartPanel(ttk.Frame):
             )
             return
         self._lspr_shift_items = items
+        self._lspr_bar_entries = self._build_target_bar_entries()
+        if not self._lspr_bar_entries:
+            self._lspr_bar_entries = self._build_all_target_bar_entries_by_transition()
+        self._refresh_lspr_bar_target_options()
         self.draw_chart()
 
     def calculate_lspr_shift_for_first_series(self) -> None:
         self.calculate_lspr_shift_for_all_series()
+
+    def calculate_target_shift_for_selected_stage(self) -> None:
+        self.draw_chart()
+        if not self._series:
+            messagebox.showinfo("No Plot", "Create a plot first.")
+            return
+        if not self._stage_regions:
+            messagebox.showinfo("No Stage Regions", "No stage background regions were found.")
+            return
+        selected_label = self.target_stage_var.get().strip()
+        if not selected_label:
+            messagebox.showinfo("No Target", "Please select a List name in Target.")
+            return
+
+        target_items: list[dict[str, object]] = []
+        bar_entries: list[dict[str, object]] = []
+        selected_regions = self._selected_stage_regions(selected_label)
+        if not selected_regions:
+            messagebox.showinfo("No Target", f"No regions matching {selected_label} were found.")
+            return
+
+        for region_index, region in enumerate(selected_regions):
+            items, entries = self._calculate_center_stage_shift_items(region, region_index, len(selected_regions))
+            target_items.extend(items)
+            bar_entries.extend(entries)
+
+        if not target_items:
+            messagebox.showinfo(
+                "No Target Shift",
+                f"No usable left/right stages were found for {selected_label}.",
+            )
+            return
+        self._lspr_shift_items = target_items
+        self._lspr_bar_entries = bar_entries
+        self._refresh_lspr_bar_target_options()
+        if bar_entries:
+            self.lspr_bar_target_var.set(str(bar_entries[0].get("target", "")))
+        self.draw_chart()
+
+    def _selected_stage_regions(self, selected_label: str) -> list[tuple[float, float, str, str]]:
+        regions: list[tuple[float, float, str, str]] = []
+        for start, end, label, color in self._stage_regions:
+            if self._stage_label_matches(str(label), selected_label):
+                regions.append((float(start), float(end), str(label), str(color)))
+        return regions
+
+    def _calculate_center_stage_shift_items(
+        self,
+        target_region: tuple[float, float, str, str],
+        region_index: int,
+        region_count: int,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        start, end, label, color = target_region
+        neighbors = self._neighbor_regions_for_stage(start, end)
+        if neighbors is None:
+            return [], []
+        left_region, right_region = neighbors
+
+        items: list[dict[str, object]] = []
+        bar_entries: list[dict[str, object]] = []
+        for series_index, series in enumerate(self._series):
+            points = self._points_for_lspr(series)
+            left_values, left_window_start, left_window_end = self._stage_region_value_window(points, left_region[0], left_region[1])
+            right_values, right_window_start, right_window_end = self._stage_region_value_window(points, right_region[0], right_region[1])
+            if not left_values or not right_values:
+                continue
+            left_avg = sum(left_values) / len(left_values)
+            right_avg = sum(right_values) / len(right_values)
+            left_error = self._standard_error(left_values)
+            right_error = self._standard_error(right_values)
+            delta_error = math.sqrt(left_error**2 + right_error**2)
+            delta = right_avg - left_avg
+            y_span = max((max(y for _x, y in points) - min(y for _x, y in points)), 0.001)
+            label_offset = y_span * (0.04 + min(series_index, 8) * 0.025)
+            if (region_index + series_index) % 2:
+                label_offset *= -1
+            label_x = (start + end) / 2
+            label_y = max(left_avg, right_avg) + label_offset
+            items.append(
+                {
+                    "kind": "segment",
+                    "start": float(left_window_start),
+                    "end": float(left_window_end),
+                    "stage_start": float(left_region[0]),
+                    "stage_end": float(left_region[1]),
+                    "avg": float(left_avg),
+                    "error": float(left_error),
+                    "label": str(left_region[2]),
+                    "index": 1,
+                    "series_name": series.name,
+                    "series_label": series.label,
+                    "series_color": series.color,
+                    "series_index": series_index,
+                }
+            )
+            items.append(
+                {
+                    "kind": "segment",
+                    "start": float(right_window_start),
+                    "end": float(right_window_end),
+                    "stage_start": float(right_region[0]),
+                    "stage_end": float(right_region[1]),
+                    "avg": float(right_avg),
+                    "error": float(right_error),
+                    "label": str(right_region[2]),
+                    "index": 2,
+                    "series_name": series.name,
+                    "series_label": series.label,
+                    "series_color": series.color,
+                    "series_index": series_index,
+                }
+            )
+            item = {
+                "kind": "shift",
+                "x": float(label_x),
+                "y": float(label_y),
+                "delta": float(delta),
+                "error": float(delta_error),
+                "series_name": series.name,
+                "series_label": series.label,
+                "series_color": series.color,
+                "series_index": series_index,
+                "target": str(label),
+                "target_color": str(color),
+            }
+            items.append(item)
+            bar_entries.append(
+                {
+                    "target": str(label),
+                    "target_color": str(color),
+                    "name": str(series.label),
+                    "value": float(delta),
+                    "error": float(delta_error),
+                    "color": str(series.color),
+                }
+            )
+        return items, bar_entries
+
+    def _neighbor_regions_for_stage(
+        self,
+        start: float,
+        end: float,
+    ) -> tuple[tuple[float, float, str, str], tuple[float, float, str, str]] | None:
+        regions = sorted(
+            [(float(region_start), float(region_end), str(label), str(color)) for region_start, region_end, label, color in self._stage_regions],
+            key=lambda region: (region[0], region[1]),
+        )
+        previous_regions = [region for region in regions if region[1] <= start + 1e-9]
+        next_regions = [region for region in regions if region[0] >= end - 1e-9]
+        if not previous_regions or not next_regions:
+            return None
+        return max(previous_regions, key=lambda region: region[1]), min(next_regions, key=lambda region: region[0])
+
+    def _stage_region_average(self, points: list[tuple[float, float]], start: float, end: float) -> float | None:
+        values = self._stage_region_values(points, start, end)
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    def _standard_error(self, values: list[float]) -> float:
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+        return math.sqrt(variance) / math.sqrt(len(values))
+
+    def _stage_region_sample_window(self, start: float, end: float) -> tuple[float, float]:
+        if end <= start:
+            return start, end
+        window_end = end - 20.0
+        if window_end <= start:
+            window_end = end
+        window_start = max(start, window_end - 80.0)
+        return window_start, window_end
+
+    def _stage_region_value_window(
+        self,
+        points: list[tuple[float, float]],
+        start: float,
+        end: float,
+    ) -> tuple[list[float], float, float]:
+        if end <= start:
+            return [], start, end
+        window_start, window_end = self._stage_region_sample_window(start, end)
+        values = [y_value for x_value, y_value in points if window_start <= x_value <= window_end]
+        if values:
+            return values, window_start, window_end
+        values = [y_value for x_value, y_value in points if start <= x_value <= end]
+        return values, start, end
+
+    def _stage_region_values(self, points: list[tuple[float, float]], start: float, end: float) -> list[float]:
+        values, _window_start, _window_end = self._stage_region_value_window(points, start, end)
+        return values
 
     def _calculate_lspr_shift_items(
         self,
@@ -828,16 +2170,11 @@ class AverageValuesChartPanel(ttk.Frame):
 
         segments: list[dict[str, object]] = []
         for start, end, label, _color in ssc_regions:
-            window_end = end - 20.0
-            if window_end <= start:
-                window_end = end
-            window_start = max(start, window_end - 80.0)
-            window_points = [(x, y) for x, y in points if window_start <= x <= window_end]
-            if not window_points:
-                window_points = [(x, y) for x, y in points if start <= x <= end]
-            if not window_points:
+            window_values, window_start, window_end = self._stage_region_value_window(points, float(start), float(end))
+            if not window_values:
                 continue
-            avg = sum(y for _x, y in window_points) / len(window_points)
+            avg = sum(window_values) / len(window_values)
+            error = self._standard_error(window_values)
             segments.append(
                 {
                     "kind": "segment",
@@ -846,6 +2183,7 @@ class AverageValuesChartPanel(ttk.Frame):
                     "stage_start": float(start),
                     "stage_end": float(end),
                     "avg": float(avg),
+                    "error": float(error),
                     "label": str(label),
                     "index": len(segments) + 1,
                     "series_name": series.name,
@@ -869,6 +2207,7 @@ class AverageValuesChartPanel(ttk.Frame):
                 continue
             previous = segments[index - 1]
             delta = float(segment["avg"]) - float(previous["avg"])
+            error = math.sqrt(float(segment.get("error", 0.0)) ** 2 + float(previous.get("error", 0.0)) ** 2)
             previous_end = float(previous["end"])
             current_start = float(segment["start"])
             if current_start > previous_end:
@@ -876,18 +2215,28 @@ class AverageValuesChartPanel(ttk.Frame):
             else:
                 label_x = (float(segment["start"]) + float(segment["end"])) / 2
             label_y = max(float(previous["avg"]), float(segment["avg"])) + label_offset
+            target_region = self._target_region_between(float(previous["stage_end"]), float(segment["stage_start"]))
+            target_payload = {}
+            if target_region is not None:
+                _target_start, _target_end, target_label, target_color = target_region
+                target_payload = {
+                    "target": target_label,
+                    "target_color": target_color,
+                }
             items.append(
                 {
                     "kind": "shift",
                     "x": float(label_x),
                     "y": float(label_y),
                     "delta": delta,
+                    "error": float(error),
                     "from": int(previous["index"]),
                     "to": int(segment["index"]),
                     "series_name": series.name,
                     "series_label": series.label,
                     "series_color": series.color,
                     "series_index": series_index,
+                    **target_payload,
                 }
             )
         return items
@@ -912,6 +2261,7 @@ class AverageValuesChartPanel(ttk.Frame):
         text = str(value).lower()
         for old, new in (("×", "x"), ("*", "x"), ("_", ""), ("-", ""), (" ", ""), ("\t", "")):
             text = text.replace(old, new)
+        text = text.replace("×", "x")
         return "".join(char for char in text if char.isalnum())
 
     def _draw_lspr_shift_items(
@@ -964,6 +2314,46 @@ class AverageValuesChartPanel(ttk.Frame):
                 )
                 self._register_draggable("lspr_label", index, text_id, tag=tag)
 
+    def _draw_lspr_sample_windows(
+        self,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        x_min: float,
+        x_max: float,
+    ) -> None:
+        if not self._lspr_shift_items:
+            return
+        drawn_windows: set[tuple[float, float]] = set()
+        for item in self._lspr_shift_items:
+            if item.get("kind") != "segment":
+                continue
+            try:
+                start = float(item["start"])
+                end = float(item["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            visible_start = max(start, x_min)
+            visible_end = min(end, x_max)
+            if visible_end <= visible_start:
+                continue
+            key = (round(start, 6), round(end, 6))
+            if key in drawn_windows:
+                continue
+            drawn_windows.add(key)
+            x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
+            x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
+            self.canvas.create_rectangle(
+                x1,
+                top,
+                x2,
+                bottom,
+                fill="#FFF2A8",
+                outline="#C89A00",
+                stipple="gray25",
+            )
+
     def _draw_export_lspr_shift_items(self, draw, x_to_px, y_to_px, font, scale: float) -> None:
         if not self._lspr_shift_items:
             return
@@ -990,6 +2380,46 @@ class AverageValuesChartPanel(ttk.Frame):
                     else f"Δλ={float(item['delta']):+.3f}"
                 )
                 self._draw_export_boxed_text(draw, x, y, label, font, anchor="center")
+
+    def _draw_export_lspr_sample_windows(
+        self,
+        draw,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+        x_min: float,
+        x_max: float,
+        x_to_px,
+        scale: float,
+    ) -> None:
+        if not self._lspr_shift_items:
+            return
+        drawn_windows: set[tuple[float, float]] = set()
+        for item in self._lspr_shift_items:
+            if item.get("kind") != "segment":
+                continue
+            try:
+                start = float(item["start"])
+                end = float(item["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            visible_start = max(start, x_min)
+            visible_end = min(end, x_max)
+            if visible_end <= visible_start:
+                continue
+            key = (round(start, 6), round(end, 6))
+            if key in drawn_windows:
+                continue
+            drawn_windows.add(key)
+            x1 = x_to_px(visible_start)
+            x2 = x_to_px(visible_end)
+            draw.rectangle(
+                (x1, top, x2, bottom),
+                fill="#FFF2A8",
+                outline="#C89A00",
+                width=max(1, int(scale)),
+            )
 
     def export_plot_data(self) -> None:
         if not self.data or not self._series:
@@ -1124,10 +2554,13 @@ class AverageValuesChartPanel(ttk.Frame):
 
         draw.rectangle((left, top, right, bottom), fill="white", outline="#d0d0d0", width=max(1, int(scale)))
         self._draw_export_stage_regions(draw, left, top, right, bottom, x_min, x_max, x_to_px, font_label, scale)
+        self._draw_export_lspr_sample_windows(draw, left, top, right, bottom, x_min, x_max, x_to_px, scale)
         if self.show_grid_var.get():
             self._draw_export_grid(draw, left, top, right, bottom, scale)
         self._draw_export_axes(draw, left, top, right, bottom, x_min, x_max, y_min, y_max, x_to_px, y_to_px, font_tick, scale)
+        self._export_plot_rect = (left, top, right, bottom)
         self._draw_export_series(draw, series, x_to_px, y_to_px, line_width, point_size, scale)
+        self._export_plot_rect = (0, 0, width, height)
         self._draw_export_lspr_shift_items(draw, x_to_px, y_to_px, font_lspr, scale)
         if self.show_legend_var.get():
             legend_x, legend_y = self._scaled_export_position(
@@ -1300,6 +2733,7 @@ class AverageValuesChartPanel(ttk.Frame):
     def _draw_export_series(self, draw, series: list[PlotSeries], x_to_px, y_to_px, line_width: int, point_size: int, scale: float) -> None:
         chart_type = self.chart_type_var.get()
         radius = max(1, int(point_size * scale))
+        left, top, right, bottom = self._export_plot_rect
         for item in series:
             width = max(1, int(self._series_line_width(item.name, line_width) * scale))
             points = item.points
@@ -1310,16 +2744,42 @@ class AverageValuesChartPanel(ttk.Frame):
             if chart_type == "bar":
                 bar_width = max(4, int(12 * scale))
                 for x, y in coords:
-                    draw.rectangle((x - bar_width / 2, y, x + bar_width / 2, y_to_px(0)), fill=item.color)
+                    if x + bar_width / 2 < left or x - bar_width / 2 > right:
+                        continue
+                    zero_y = min(bottom, max(top, y_to_px(0)))
+                    clipped_y = min(bottom, max(top, y))
+                    draw.rectangle(
+                        (
+                            max(left, x - bar_width / 2),
+                            min(clipped_y, zero_y),
+                            min(right, x + bar_width / 2),
+                            max(clipped_y, zero_y),
+                        ),
+                        fill=item.color,
+                    )
                 continue
-            if len(coords) >= 2:
-                draw.line(coords, fill=item.color, width=width, joint="curve")
+            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
+                if clipped is None:
+                    continue
+                draw.line(clipped, fill=item.color, width=width)
             if self.show_points_var.get() or chart_type == "scatter":
                 source = render_points if chart_type == "scatter" else points
                 for x_value, y_value in source:
                     x = x_to_px(x_value)
                     y = y_to_px(y_value)
-                    draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=item.color, outline=item.color)
+                    if x < left or x > right or y < top or y > bottom:
+                        continue
+                    draw.ellipse(
+                        (
+                            max(left, x - radius),
+                            max(top, y - radius),
+                            min(right, x + radius),
+                            min(bottom, y + radius),
+                        ),
+                        fill=item.color,
+                        outline=item.color,
+                    )
 
     def _draw_export_legend(self, draw, x: float, y: float, series: list[PlotSeries], title_font, item_font, scale: float) -> None:
         box = 18 * scale
@@ -1897,20 +3357,38 @@ class AverageValuesChartPanel(ttk.Frame):
             render_points = item.points
             if self._smooth_enabled() and len(item.points) >= 5:
                 render_points = self._savitzky_golay_points(item.points)
-            coords: list[float] = []
-            for x_value, y_value in render_points:
-                coords.extend([
+            coords = [
+                (
                     self._x_to_canvas(x_value, left, right, x_min, x_max),
                     self._y_to_canvas(y_value, top, bottom, y_min, y_max),
-                ])
-            if len(coords) >= 4:
-                self.canvas.create_line(*coords, fill=item.color, width=self._series_line_width(item.name, line_width), smooth=False)
+                )
+                for x_value, y_value in render_points
+            ]
+            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
+                if clipped is None:
+                    continue
+                self.canvas.create_line(
+                    *clipped,
+                    fill=item.color,
+                    width=self._series_line_width(item.name, line_width),
+                    smooth=False,
+                )
             if self.show_points_var.get() or chart_type == "scatter":
                 point_source = item.points if chart_type != "scatter" else render_points
                 for x_value, y_value in point_source:
                     x = self._x_to_canvas(x_value, left, right, x_min, x_max)
                     y = self._y_to_canvas(y_value, top, bottom, y_min, y_max)
-                    self.canvas.create_oval(x - point_size, y - point_size, x + point_size, y + point_size, fill=item.color, outline="")
+                    if x < left or x > right or y < top or y > bottom:
+                        continue
+                    self.canvas.create_oval(
+                        max(left, x - point_size),
+                        max(top, y - point_size),
+                        min(right, x + point_size),
+                        min(bottom, y + point_size),
+                        fill=item.color,
+                        outline="",
+                    )
 
     def _draw_bar_series(
         self,
@@ -1928,8 +3406,18 @@ class AverageValuesChartPanel(ttk.Frame):
         width = max(4.0, min(24.0, (right - left) / max(len(points), 1) * 0.55))
         for x_value, y_value in points:
             x = self._x_to_canvas(x_value, left, right, x_min, x_max)
+            if x + width / 2 < left or x - width / 2 > right:
+                continue
             y = self._y_to_canvas(y_value, top, bottom, y_min, y_max)
-            self.canvas.create_rectangle(x - width / 2, y, x + width / 2, bottom, fill=color, outline="")
+            y = min(bottom, max(top, y))
+            self.canvas.create_rectangle(
+                max(left, x - width / 2),
+                min(y, bottom),
+                min(right, x + width / 2),
+                max(y, bottom),
+                fill=color,
+                outline="",
+            )
 
     def _draw_legend(self, x: float, y: float, series: list[PlotSeries]) -> None:
         tag = "drag_legend"
@@ -2232,6 +3720,66 @@ class AverageValuesChartPanel(ttk.Frame):
         if math.isclose(span, 0.0):
             return (top + bottom) / 2
         return bottom - (value - y_min) * (bottom - top) / span
+
+    def _clip_line_to_rect(
+        self,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        left: float,
+        top: float,
+        right: float,
+        bottom: float,
+    ) -> tuple[float, float, float, float] | None:
+        inside, left_code, right_code, top_code, bottom_code = 0, 1, 2, 4, 8
+
+        def out_code(x: float, y: float) -> int:
+            code = inside
+            if x < left:
+                code |= left_code
+            elif x > right:
+                code |= right_code
+            if y < top:
+                code |= top_code
+            elif y > bottom:
+                code |= bottom_code
+            return code
+
+        code1 = out_code(x1, y1)
+        code2 = out_code(x2, y2)
+        while True:
+            if not (code1 | code2):
+                return x1, y1, x2, y2
+            if code1 & code2:
+                return None
+            code_out = code1 or code2
+            if code_out & top_code:
+                if math.isclose(y2, y1):
+                    return None
+                x = x1 + (x2 - x1) * (top - y1) / (y2 - y1)
+                y = top
+            elif code_out & bottom_code:
+                if math.isclose(y2, y1):
+                    return None
+                x = x1 + (x2 - x1) * (bottom - y1) / (y2 - y1)
+                y = bottom
+            elif code_out & right_code:
+                if math.isclose(x2, x1):
+                    return None
+                y = y1 + (y2 - y1) * (right - x1) / (x2 - x1)
+                x = right
+            else:
+                if math.isclose(x2, x1):
+                    return None
+                y = y1 + (y2 - y1) * (left - x1) / (x2 - x1)
+                x = left
+            if code_out == code1:
+                x1, y1 = x, y
+                code1 = out_code(x1, y1)
+            else:
+                x2, y2 = x, y
+                code2 = out_code(x2, y2)
 
     def _canvas_to_x(self, px: float, left: float, right: float, x_min: float, x_max: float) -> float:
         span = right - left
