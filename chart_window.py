@@ -273,27 +273,6 @@ class LSPRShiftBarChartWindow(tk.Toplevel):
             button.configure(command=choose)
 
     def export_high_resolution_image(self) -> None:
-        if ImageGrab is None or Image is None:
-            file_path = filedialog.asksaveasfilename(
-                title="Export Bar Chart Image",
-                defaultextension=".eps",
-                filetypes=[
-                    ("Encapsulated PostScript", "*.eps"),
-                    ("PostScript files", "*.ps"),
-                    ("All files", "*.*"),
-                ],
-            )
-            if not file_path:
-                return
-            try:
-                self.canvas.postscript(file=file_path, colormode="color")
-                messagebox.showinfo(
-                    "Export Complete",
-                    f"Pillow is not installed, so a vector PostScript image was exported to:\n{file_path}",
-                )
-            except Exception as exc:
-                messagebox.showerror("Export Failed", f"Unable to export image:\n{exc}")
-            return
         file_path = filedialog.asksaveasfilename(
             title="Export Bar Chart Image",
             defaultextension=".png",
@@ -302,20 +281,51 @@ class LSPRShiftBarChartWindow(tk.Toplevel):
                 ("TIFF image", "*.tif *.tiff"),
                 ("JPEG image", "*.jpg *.jpeg"),
                 ("Bitmap image", "*.bmp"),
+                ("PostScript files", "*.ps"),
+                ("Encapsulated PostScript", "*.eps"),
                 ("All files", "*.*"),
             ],
         )
         if not file_path:
             return
         try:
-            image = self._capture_visible_canvas(scale=3)
             suffix = Path(file_path).suffix.lower()
+            if suffix in {".ps", ".eps"}:
+                self.canvas.postscript(file=file_path, colormode="color")
+                messagebox.showinfo("Export Complete", f"Bar chart image exported to:\n{file_path}")
+                return
+            self._pillow_modules()
+            image = self._render_export_image(scale=4)
             if suffix in {".jpg", ".jpeg"}:
                 image = image.convert("RGB")
-            image.save(file_path)
+                image.save(file_path, format="JPEG", quality=95, dpi=(300, 300))
+            elif suffix in {".tif", ".tiff"}:
+                image.save(file_path, format="TIFF", dpi=(300, 300))
+            elif suffix == ".bmp":
+                image.save(file_path, format="BMP")
+            else:
+                image.save(file_path, format="PNG", dpi=(300, 300))
             messagebox.showinfo("Export Complete", f"Bar chart image exported to:\n{file_path}")
         except Exception as exc:
             messagebox.showerror("Export Failed", f"Unable to export bar chart image:\n{exc}")
+
+    def _pillow_modules(self):
+        global Image, ImageDraw, ImageFont
+        if Image is not None and ImageDraw is not None and ImageFont is not None:
+            return Image, ImageDraw, ImageFont
+        try:
+            from PIL import Image as loaded_image
+            from PIL import ImageDraw as loaded_image_draw
+            from PIL import ImageFont as loaded_image_font
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Pillow is required for PNG/TIFF/JPEG/BMP export.\n\n"
+                "Please click the main window's Install Dependencies button, then try Export Image again."
+            ) from exc
+        Image = loaded_image
+        ImageDraw = loaded_image_draw
+        ImageFont = loaded_image_font
+        return Image, ImageDraw, ImageFont
 
     def _capture_visible_canvas(self, scale: int = 3):
         self.lift()
@@ -765,6 +775,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._series_widths: dict[str, str] = {}
         self._stage_regions: list[tuple[float, float, str, str]] = []
         self._target_regions: list[tuple[float, float, str, str]] = []
+        self._hidden_time_ranges: list[tuple[float, float]] = []
         self._annotations: list[dict[str, object]] = []
         self._lspr_shift_items: list[dict[str, object]] = []
         self._lspr_bar_entries: list[dict[str, object]] = []
@@ -789,6 +800,9 @@ class AverageValuesChartPanel(ttk.Frame):
         self.x_max_var = tk.StringVar()
         self.y_min_var = tk.StringVar()
         self.y_max_var = tk.StringVar()
+        self.hide_start_var = tk.StringVar()
+        self.hide_end_var = tk.StringVar()
+        self.hidden_range_label_var = tk.StringVar(value="Break 0")
         self.text_var = tk.StringVar()
         self.running_buffer_var = tk.StringVar(value="5*SSC")
         self.target_stage_var = tk.StringVar()
@@ -1002,6 +1016,13 @@ class AverageValuesChartPanel(ttk.Frame):
         )
         self.target_stage_box.grid(row=3, column=1, padx=(0, 8), pady=(6, 0), sticky="w")
         ttk.Button(action_bar, text="Target", command=self.calculate_target_shift_for_selected_stage, width=APP_BUTTON_WIDTH).grid(row=3, column=2, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="Axis Break").grid(row=4, column=0, padx=(0, 4), pady=(6, 0), sticky="w")
+        ttk.Entry(action_bar, textvariable=self.hide_start_var, width=10).grid(row=4, column=1, padx=(0, 4), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="to").grid(row=4, column=2, padx=(0, 4), pady=(6, 0), sticky="w")
+        ttk.Entry(action_bar, textvariable=self.hide_end_var, width=10).grid(row=4, column=3, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Add Break", command=self.add_hidden_time_range, width=APP_BUTTON_WIDTH).grid(row=4, column=4, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Clear Break", command=self.clear_hidden_time_ranges, width=APP_BUTTON_WIDTH).grid(row=4, column=5, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, textvariable=self.hidden_range_label_var).grid(row=4, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
         self._load_format_presets()
 
         self.canvas = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground="#d0d0d0")
@@ -1056,6 +1077,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._selected_y_cache = []
         self._stage_regions = []
         self._target_regions = []
+        self._hidden_time_ranges = []
         self._annotations = []
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
@@ -1063,6 +1085,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._draggables = []
         self._drag_target = None
         self._view_bounds = None
+        self._refresh_hidden_range_label()
         self._refresh_running_buffer_options()
         self._refresh_target_stage_options()
         self.canvas.delete("all")
@@ -1081,6 +1104,36 @@ class AverageValuesChartPanel(ttk.Frame):
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
         self._refresh_lspr_bar_target_options()
+        self.draw_chart()
+
+    def add_hidden_time_range(self) -> None:
+        try:
+            start = float(self.hide_start_var.get().strip())
+            end = float(self.hide_end_var.get().strip())
+        except ValueError:
+            messagebox.showinfo("Invalid Axis Break", "Please enter numeric start and end time.")
+            return
+        if math.isclose(start, end):
+            messagebox.showinfo("Invalid Axis Break", "Start and end time cannot be the same.")
+            return
+        if end < start:
+            start, end = end, start
+        self._hidden_time_ranges.append((start, end))
+        self._hidden_time_ranges = self._merge_hidden_time_ranges(self._hidden_time_ranges)
+        self._lspr_shift_items = []
+        self._lspr_bar_entries = []
+        self._refresh_lspr_bar_target_options()
+        self._refresh_hidden_range_label()
+        self.draw_chart()
+
+    def clear_hidden_time_ranges(self) -> None:
+        self._hidden_time_ranges = []
+        self.hide_start_var.set("")
+        self.hide_end_var.set("")
+        self._lspr_shift_items = []
+        self._lspr_bar_entries = []
+        self._refresh_lspr_bar_target_options()
+        self._refresh_hidden_range_label()
         self.draw_chart()
 
     def _on_running_buffer_change(self, _event=None) -> None:
@@ -1565,6 +1618,8 @@ class AverageValuesChartPanel(ttk.Frame):
             "tick_font_size": self.tick_font_size_var.get(),
             "tick_bold": self.tick_bold_var.get(),
             "stage_opacity": self.stage_opacity_var.get(),
+            "axis_break_ranges": [list(item) for item in self._hidden_time_ranges],
+            "hidden_time_ranges": [list(item) for item in self._hidden_time_ranges],
             "series_labels": dict(self._series_labels),
             "series_colors": dict(self._series_colors),
             "series_widths": dict(self._series_widths),
@@ -1600,6 +1655,10 @@ class AverageValuesChartPanel(ttk.Frame):
         self.tick_bold_var.set(bool(preset.get("tick_bold", False)))
         self.stage_opacity_var.set(max(0, min(100, int(preset.get("stage_opacity", 70) or 70))))
         self.stage_opacity_label_var.set(f"Background {self.stage_opacity_var.get()}%")
+        self._hidden_time_ranges = self._parse_hidden_time_ranges(
+            preset.get("axis_break_ranges", preset.get("hidden_time_ranges", []))
+        )
+        self._refresh_hidden_range_label()
 
         self._series_labels.update(self._string_dict(preset.get("series_labels", {})))
         self._series_colors.update(self._string_dict(preset.get("series_colors", {})))
@@ -1633,6 +1692,20 @@ class AverageValuesChartPanel(ttk.Frame):
             return float(value[0]), float(value[1])
         except (TypeError, ValueError):
             return None
+
+    def _parse_hidden_time_ranges(self, value: object) -> list[tuple[float, float]]:
+        if not isinstance(value, list):
+            return []
+        ranges: list[tuple[float, float]] = []
+        for item in value:
+            parsed = self._point_tuple(item)
+            if parsed is None:
+                continue
+            start, end = parsed
+            if math.isclose(start, end):
+                continue
+            ranges.append((min(start, end), max(start, end)))
+        return self._merge_hidden_time_ranges(ranges)
 
     def open_plot_settings(self, initial_tab: str = "General") -> None:
         window = tk.Toplevel(self)
@@ -1833,7 +1906,9 @@ class AverageValuesChartPanel(ttk.Frame):
 
         self._series = series
         xs = [x for item in series for x, _ in item.points]
-        ys = [y for item in series for _, y in item.points]
+        ys = [y for item in series for _x, y in self._visible_points(item.points)]
+        if not ys:
+            ys = [y for item in series for _, y in item.points]
         bounds = self._resolve_bounds(xs, ys)
         if bounds is None:
             self._draw_message("No visible data range.")
@@ -1860,6 +1935,7 @@ class AverageValuesChartPanel(ttk.Frame):
             self._draw_grid(left, top, right, bottom)
         self._draw_axes(left, top, right, bottom, x_min, x_max, y_min, y_max)
         self._draw_series(series, left, top, right, bottom, x_min, x_max, y_min, y_max, line_width, point_size)
+        self._draw_axis_break_marks(left, top, right, bottom, x_min, x_max)
         self._draw_lspr_shift_items(left, top, right, bottom, x_min, x_max, y_min, y_max)
         if self.show_legend_var.get():
             legend_x, legend_y = self._legend_position or (right + 16, top + 10)
@@ -2244,8 +2320,14 @@ class AverageValuesChartPanel(ttk.Frame):
     def _points_for_lspr(self, series: PlotSeries) -> list[tuple[float, float]]:
         points = series.points
         if self._smooth_enabled() and len(points) >= 5:
-            return self._savitzky_golay_points(points)
-        return points
+            smoothed: list[tuple[float, float]] = []
+            for segment in self._visible_point_segments(points):
+                if len(segment) >= 5:
+                    smoothed.extend(self._savitzky_golay_points(segment))
+                else:
+                    smoothed.extend(segment)
+            return smoothed
+        return self._visible_points(points)
 
     def _is_ssc_stage_label(self, label: str) -> bool:
         return self._stage_label_matches(label, "5*SSC")
@@ -2281,17 +2363,18 @@ class AverageValuesChartPanel(ttk.Frame):
         for index, item in enumerate(self._lspr_shift_items):
             kind = item.get("kind")
             if kind == "segment":
-                x1 = self._x_to_canvas(float(item["start"]), left, right, x_min, x_max)
-                x2 = self._x_to_canvas(float(item["end"]), left, right, x_min, x_max)
                 y = self._y_to_canvas(float(item["avg"]), top, bottom, y_min, y_max)
-                if x2 < left or x1 > right:
-                    continue
-                x1 = max(left, min(right, x1))
-                x2 = max(left, min(right, x2))
                 y = max(top + 3, min(bottom - 3, y))
                 color = str(item.get("series_color", "#ff0000"))
-                self.canvas.create_line(x1, y, x2, y, fill=color, width=5)
-                self.canvas.create_line(x1, y, x2, y, fill="#ffffff", width=1)
+                for visible_start, visible_end in self._visible_interval_segments(float(item["start"]), float(item["end"]), x_min, x_max):
+                    x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
+                    x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
+                    if x2 < left or x1 > right:
+                        continue
+                    x1 = max(left, min(right, x1))
+                    x2 = max(left, min(right, x2))
+                    self.canvas.create_line(x1, y, x2, y, fill=color, width=5)
+                    self.canvas.create_line(x1, y, x2, y, fill="#ffffff", width=1)
             elif kind == "shift":
                 if "label_px" in item and "label_py" in item:
                     x = float(item["label_px"])
@@ -2334,38 +2417,38 @@ class AverageValuesChartPanel(ttk.Frame):
                 end = float(item["end"])
             except (KeyError, TypeError, ValueError):
                 continue
-            visible_start = max(start, x_min)
-            visible_end = min(end, x_max)
-            if visible_end <= visible_start:
-                continue
             key = (round(start, 6), round(end, 6))
             if key in drawn_windows:
                 continue
             drawn_windows.add(key)
-            x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
-            x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
-            self.canvas.create_rectangle(
-                x1,
-                top,
-                x2,
-                bottom,
-                fill="#FFF2A8",
-                outline="#C89A00",
-                stipple="gray25",
-            )
+            for visible_start, visible_end in self._visible_interval_segments(start, end, x_min, x_max):
+                x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
+                x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
+                if abs(x2 - x1) < 2:
+                    continue
+                self.canvas.create_rectangle(
+                    x1,
+                    top,
+                    x2,
+                    bottom,
+                    fill="#FFF2A8",
+                    outline="#C89A00",
+                    stipple="gray25",
+                )
 
-    def _draw_export_lspr_shift_items(self, draw, x_to_px, y_to_px, font, scale: float) -> None:
+    def _draw_export_lspr_shift_items(self, draw, x_to_px, y_to_px, font, scale: float, x_min: float, x_max: float) -> None:
         if not self._lspr_shift_items:
             return
         for item in self._lspr_shift_items:
             kind = item.get("kind")
             if kind == "segment":
-                x1 = x_to_px(float(item["start"]))
-                x2 = x_to_px(float(item["end"]))
                 y = y_to_px(float(item["avg"]))
                 color = str(item.get("series_color", "#ff0000"))
-                draw.line((x1, y, x2, y), fill=color, width=max(4, int(5 * scale)))
-                draw.line((x1, y, x2, y), fill="#ffffff", width=max(1, int(1 * scale)))
+                for visible_start, visible_end in self._visible_interval_segments(float(item["start"]), float(item["end"]), x_min, x_max):
+                    x1 = x_to_px(visible_start)
+                    x2 = x_to_px(visible_end)
+                    draw.line((x1, y, x2, y), fill=color, width=max(4, int(5 * scale)))
+                    draw.line((x1, y, x2, y), fill="#ffffff", width=max(1, int(1 * scale)))
             elif kind == "shift":
                 if "label_px" in item and "label_py" in item:
                     x = float(item["label_px"]) * scale
@@ -2404,22 +2487,21 @@ class AverageValuesChartPanel(ttk.Frame):
                 end = float(item["end"])
             except (KeyError, TypeError, ValueError):
                 continue
-            visible_start = max(start, x_min)
-            visible_end = min(end, x_max)
-            if visible_end <= visible_start:
-                continue
             key = (round(start, 6), round(end, 6))
             if key in drawn_windows:
                 continue
             drawn_windows.add(key)
-            x1 = x_to_px(visible_start)
-            x2 = x_to_px(visible_end)
-            draw.rectangle(
-                (x1, top, x2, bottom),
-                fill="#FFF2A8",
-                outline="#C89A00",
-                width=max(1, int(scale)),
-            )
+            for visible_start, visible_end in self._visible_interval_segments(start, end, x_min, x_max):
+                x1 = x_to_px(visible_start)
+                x2 = x_to_px(visible_end)
+                if abs(x2 - x1) < 2:
+                    continue
+                draw.rectangle(
+                    (x1, top, x2, bottom),
+                    fill="#FFF2A8",
+                    outline="#C89A00",
+                    width=max(1, int(scale)),
+                )
 
     def export_plot_data(self) -> None:
         if not self.data or not self._series:
@@ -2543,9 +2625,7 @@ class AverageValuesChartPanel(ttk.Frame):
         font_legend = self._export_font(font_module, int(12 * scale))
 
         def x_to_px(value: float) -> float:
-            if math.isclose(x_min, x_max):
-                return (left + right) / 2
-            return left + (value - x_min) * (right - left) / (x_max - x_min)
+            return self._x_to_canvas(value, left, right, x_min, x_max)
 
         def y_to_px(value: float) -> float:
             if math.isclose(y_min, y_max):
@@ -2560,8 +2640,9 @@ class AverageValuesChartPanel(ttk.Frame):
         self._draw_export_axes(draw, left, top, right, bottom, x_min, x_max, y_min, y_max, x_to_px, y_to_px, font_tick, scale)
         self._export_plot_rect = (left, top, right, bottom)
         self._draw_export_series(draw, series, x_to_px, y_to_px, line_width, point_size, scale)
+        self._draw_export_axis_break_marks(draw, left, top, right, bottom, x_min, x_max, x_to_px, scale)
         self._export_plot_rect = (0, 0, width, height)
-        self._draw_export_lspr_shift_items(draw, x_to_px, y_to_px, font_lspr, scale)
+        self._draw_export_lspr_shift_items(draw, x_to_px, y_to_px, font_lspr, scale, x_min, x_max)
         if self.show_legend_var.get():
             legend_x, legend_y = self._scaled_export_position(
                 self._legend_position,
@@ -2608,7 +2689,9 @@ class AverageValuesChartPanel(ttk.Frame):
         if not series:
             return [], x_name, y_names, None, line_width, point_size
         xs = [x for item in series for x, _ in item.points]
-        ys = [y for item in series for _, y in item.points]
+        ys = [y for item in series for _x, y in self._visible_points(item.points)]
+        if not ys:
+            ys = [y for item in series for _, y in item.points]
         bounds = self._resolve_bounds(xs, ys)
         return series, x_name, y_names, bounds, line_width, point_size
 
@@ -2638,14 +2721,13 @@ class AverageValuesChartPanel(ttk.Frame):
         if not self._stage_regions and self.stage_text_var.get().strip():
             self._parse_stage_regions()
         for start, end, label, color in self._stage_regions:
-            visible_start = max(start, x_min)
-            visible_end = min(end, x_max)
-            if visible_end <= visible_start:
-                continue
-            x1 = x_to_px(visible_start)
-            x2 = x_to_px(visible_end)
-            draw.rectangle((x1, top, x2, bottom), fill=self._stage_fill_color(color), outline="#777777")
-            self._draw_export_centered_text(draw, (x1 + x2) / 2, top + 14 * scale, label, font, fill="#000000")
+            for visible_start, visible_end in self._visible_interval_segments(start, end, x_min, x_max):
+                x1 = x_to_px(visible_start)
+                x2 = x_to_px(visible_end)
+                if abs(x2 - x1) < 2:
+                    continue
+                draw.rectangle((x1, top, x2, bottom), fill=self._stage_fill_color(color), outline="#777777")
+                self._draw_export_centered_text(draw, (x1 + x2) / 2, top + 14 * scale, label, font, fill="#000000")
 
     def _draw_export_grid(self, draw, left: int, top: int, right: int, bottom: int, scale: float) -> None:
         density = self._clamped_int_var(self.grid_density_var, 6, 2, 30)
@@ -2713,6 +2795,8 @@ class AverageValuesChartPanel(ttk.Frame):
         for value in x_ticks:
             if value < x_min - 1e-9 or value > x_max + 1e-9:
                 continue
+            if self._is_x_hidden(value):
+                continue
             x = x_to_px(value)
             draw.line((x, bottom, x, bottom + tick_size), fill="#444444", width=axis_width)
             self._draw_export_centered_text(
@@ -2730,20 +2814,43 @@ class AverageValuesChartPanel(ttk.Frame):
             draw.line((left - tick_size, y, left, y), fill="#444444", width=axis_width)
             self._draw_export_right_text(draw, left - int(14 * scale), y, self._format_tick(value, y_step), font, fill="#333333")
 
+    def _draw_export_axis_break_marks(
+        self,
+        draw,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        x_min: float,
+        x_max: float,
+        x_to_px,
+        scale: float,
+    ) -> None:
+        mark_width = max(2, int(2 * scale))
+        pad_x = 13 * scale
+        pad_y = 9 * scale
+        for start, end in self._active_axis_break_ranges(x_min, x_max):
+            x1 = x_to_px(start)
+            x2 = x_to_px(end)
+            x = (x1 + x2) / 2
+            if x < left - 20 * scale or x > right + 20 * scale:
+                continue
+            for y in (top, bottom):
+                draw.rectangle((x - pad_x, y - pad_y, x + pad_x, y + pad_y), fill="#ffffff")
+                draw.line((x - 9 * scale, y + 7 * scale, x - 2 * scale, y - 7 * scale), fill="#222222", width=mark_width)
+                draw.line((x + 2 * scale, y + 7 * scale, x + 9 * scale, y - 7 * scale), fill="#222222", width=mark_width)
+
     def _draw_export_series(self, draw, series: list[PlotSeries], x_to_px, y_to_px, line_width: int, point_size: int, scale: float) -> None:
         chart_type = self.chart_type_var.get()
         radius = max(1, int(point_size * scale))
         left, top, right, bottom = self._export_plot_rect
         for item in series:
             width = max(1, int(self._series_line_width(item.name, line_width) * scale))
-            points = item.points
-            render_points = points
-            if self._smooth_enabled() and len(points) >= 5:
-                render_points = self._savitzky_golay_points(points)
-            coords = [(x_to_px(x), y_to_px(y)) for x, y in render_points]
             if chart_type == "bar":
                 bar_width = max(4, int(12 * scale))
-                for x, y in coords:
+                for x_value, y_value in self._visible_points(item.points):
+                    x = x_to_px(x_value)
+                    y = y_to_px(y_value)
                     if x + bar_width / 2 < left or x - bar_width / 2 > right:
                         continue
                     zero_y = min(bottom, max(top, y_to_px(0)))
@@ -2758,28 +2865,37 @@ class AverageValuesChartPanel(ttk.Frame):
                         fill=item.color,
                     )
                 continue
-            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
-                clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
-                if clipped is None:
-                    continue
-                draw.line(clipped, fill=item.color, width=width)
-            if self.show_points_var.get() or chart_type == "scatter":
-                source = render_points if chart_type == "scatter" else points
-                for x_value, y_value in source:
-                    x = x_to_px(x_value)
-                    y = y_to_px(y_value)
-                    if x < left or x > right or y < top or y > bottom:
+            render_segments: list[list[tuple[float, float]]] = []
+            for segment in self._visible_point_segments(item.points):
+                if self._smooth_enabled() and len(segment) >= 5:
+                    render_segments.append(self._savitzky_golay_points(segment))
+                else:
+                    render_segments.append(segment)
+            for segment in render_segments:
+                coords = [(x_to_px(x), y_to_px(y)) for x, y in segment]
+                for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                    clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
+                    if clipped is None:
                         continue
-                    draw.ellipse(
-                        (
-                            max(left, x - radius),
-                            max(top, y - radius),
-                            min(right, x + radius),
-                            min(bottom, y + radius),
-                        ),
-                        fill=item.color,
-                        outline=item.color,
-                    )
+                    draw.line(clipped, fill=item.color, width=width)
+            if self.show_points_var.get() or chart_type == "scatter":
+                point_segments = render_segments if chart_type == "scatter" else self._visible_point_segments(item.points)
+                for segment in point_segments:
+                    for x_value, y_value in segment:
+                        x = x_to_px(x_value)
+                        y = y_to_px(y_value)
+                        if x < left or x > right or y < top or y > bottom:
+                            continue
+                        draw.ellipse(
+                            (
+                                max(left, x - radius),
+                                max(top, y - radius),
+                                min(right, x + radius),
+                                min(bottom, y + radius),
+                            ),
+                            fill=item.color,
+                            outline=item.color,
+                        )
 
     def _draw_export_legend(self, draw, x: float, y: float, series: list[PlotSeries], title_font, item_font, scale: float) -> None:
         box = 18 * scale
@@ -3166,6 +3282,121 @@ class AverageValuesChartPanel(ttk.Frame):
 
         return pd.DataFrame(rows)
 
+    def _visible_points(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if not self._hidden_time_ranges:
+            return points
+        return [(x_value, y_value) for x_value, y_value in points if not self._is_x_hidden(x_value)]
+
+    def _visible_point_segments(self, points: list[tuple[float, float]]) -> list[list[tuple[float, float]]]:
+        if not self._hidden_time_ranges:
+            return [points] if points else []
+        segments: list[list[tuple[float, float]]] = []
+        current: list[tuple[float, float]] = []
+        for x_value, y_value in points:
+            if self._is_x_hidden(x_value):
+                if current:
+                    segments.append(current)
+                    current = []
+                continue
+            current.append((x_value, y_value))
+        if current:
+            segments.append(current)
+        return segments
+
+    def _visible_interval_segments(self, start: float, end: float, x_min: float, x_max: float) -> list[tuple[float, float]]:
+        visible_start = max(min(start, end), x_min)
+        visible_end = min(max(start, end), x_max)
+        if visible_end <= visible_start:
+            return []
+        segments = [(visible_start, visible_end)]
+        for break_start, break_end in self._active_axis_break_ranges(x_min, x_max):
+            next_segments: list[tuple[float, float]] = []
+            for segment_start, segment_end in segments:
+                if break_end <= segment_start or break_start >= segment_end:
+                    next_segments.append((segment_start, segment_end))
+                    continue
+                if segment_start < break_start:
+                    next_segments.append((segment_start, break_start))
+                if break_end < segment_end:
+                    next_segments.append((break_end, segment_end))
+            segments = next_segments
+            if not segments:
+                break
+        return [(segment_start, segment_end) for segment_start, segment_end in segments if segment_end > segment_start]
+
+    def _is_x_hidden(self, x_value: float) -> bool:
+        return any(start <= x_value <= end for start, end in self._hidden_time_ranges)
+
+    def _active_axis_break_ranges(self, x_min: float, x_max: float) -> list[tuple[float, float]]:
+        if not self._hidden_time_ranges:
+            return []
+        active: list[tuple[float, float]] = []
+        for start, end in self._hidden_time_ranges:
+            visible_start = max(start, x_min)
+            visible_end = min(end, x_max)
+            if visible_end <= visible_start:
+                continue
+            active.append((visible_start, visible_end))
+        return active
+
+    def _axis_break_gap(self, x_min: float, x_max: float) -> float:
+        span = abs(x_max - x_min)
+        if math.isclose(span, 0.0):
+            return 1.0
+        return max(span * 0.012, span / 300.0)
+
+    def _x_display_value(self, value: float, x_min: float, x_max: float) -> float:
+        display_value = value
+        gap = self._axis_break_gap(x_min, x_max)
+        for start, end in self._active_axis_break_ranges(x_min, x_max):
+            if value >= end:
+                display_value -= max(0.0, (end - start) - gap)
+            elif value > start:
+                return display_value - (value - start) + gap * 0.5
+        return display_value
+
+    def _x_display_bounds(self, x_min: float, x_max: float) -> tuple[float, float]:
+        display_min = self._x_display_value(x_min, x_min, x_max)
+        display_max = self._x_display_value(x_max, x_min, x_max)
+        if math.isclose(display_min, display_max):
+            display_max = display_min + 1.0
+        return display_min, display_max
+
+    def _display_to_x_value(self, display_value: float, x_min: float, x_max: float) -> float:
+        original = display_value
+        gap = self._axis_break_gap(x_min, x_max)
+        removed_before = 0.0
+        for start, end in self._active_axis_break_ranges(x_min, x_max):
+            break_display_start = start - removed_before
+            break_display_end = break_display_start + gap
+            removed = max(0.0, (end - start) - gap)
+            if display_value < break_display_start:
+                return original
+            if display_value <= break_display_end:
+                ratio = 0.0 if math.isclose(gap, 0.0) else (display_value - break_display_start) / gap
+                return start + ratio * (end - start)
+            original += removed
+            removed_before += removed
+        return original
+
+    def _merge_hidden_time_ranges(self, ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        ordered = sorted((min(start, end), max(start, end)) for start, end in ranges)
+        merged: list[tuple[float, float]] = []
+        for start, end in ordered:
+            if not merged or start > merged[-1][1]:
+                merged.append((start, end))
+            else:
+                previous_start, previous_end = merged[-1]
+                merged[-1] = (previous_start, max(previous_end, end))
+        return merged
+
+    def _refresh_hidden_range_label(self) -> None:
+        if not self._hidden_time_ranges:
+            self.hidden_range_label_var.set("Break 0")
+            return
+        ranges = "; ".join(f"{self._format_tick(start)}-{self._format_tick(end)}" for start, end in self._hidden_time_ranges)
+        self.hidden_range_label_var.set(f"Break {len(self._hidden_time_ranges)}: {ranges}")
+
     def _resolve_bounds(self, xs: list[float], ys: list[float]) -> tuple[float, float, float, float] | None:
         manual = self._manual_bounds()
         if manual is not None:
@@ -3226,6 +3457,8 @@ class AverageValuesChartPanel(ttk.Frame):
         for value in x_ticks:
             if value < x_min - 1e-9 or value > x_max + 1e-9:
                 continue
+            if self._is_x_hidden(value):
+                continue
             px = self._x_to_canvas(value, left, right, x_min, x_max)
             self.canvas.create_line(px, bottom, px, bottom + 6, fill="#444444")
             self.canvas.create_text(
@@ -3248,6 +3481,18 @@ class AverageValuesChartPanel(ttk.Frame):
                 font=tick_font,
                 anchor="e",
             )
+
+    def _draw_axis_break_marks(self, left: float, top: float, right: float, bottom: float, x_min: float, x_max: float) -> None:
+        for start, end in self._active_axis_break_ranges(x_min, x_max):
+            x1 = self._x_to_canvas(start, left, right, x_min, x_max)
+            x2 = self._x_to_canvas(end, left, right, x_min, x_max)
+            x = (x1 + x2) / 2
+            if x < left - 20 or x > right + 20:
+                continue
+            for y in (top, bottom):
+                self.canvas.create_rectangle(x - 13, y - 9, x + 13, y + 9, fill="#ffffff", outline="")
+                self.canvas.create_line(x - 9, y + 7, x - 2, y - 7, fill="#222222", width=2)
+                self.canvas.create_line(x + 2, y + 7, x + 9, y - 7, fill="#222222", width=2)
 
     def _parse_stage_regions(self) -> None:
         regions: list[tuple[float, float, str, str]] = []
@@ -3320,20 +3565,19 @@ class AverageValuesChartPanel(ttk.Frame):
         if not self._stage_regions and self.stage_text_var.get().strip():
             self._parse_stage_regions()
         for start, end, label, color in self._stage_regions:
-            visible_start = max(start, x_min)
-            visible_end = min(end, x_max)
-            if visible_end <= visible_start:
-                continue
-            x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
-            x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
-            self.canvas.create_rectangle(x1, top, x2, bottom, fill=self._stage_fill_color(color), outline="#777777")
-            self.canvas.create_text(
-                (x1 + x2) / 2,
-                top + 14,
-                text=label,
-                fill="#000000",
-                font=("Segoe UI", 10, "bold"),
-            )
+            for visible_start, visible_end in self._visible_interval_segments(start, end, x_min, x_max):
+                x1 = self._x_to_canvas(visible_start, left, right, x_min, x_max)
+                x2 = self._x_to_canvas(visible_end, left, right, x_min, x_max)
+                if abs(x2 - x1) < 2:
+                    continue
+                self.canvas.create_rectangle(x1, top, x2, bottom, fill=self._stage_fill_color(color), outline="#777777")
+                self.canvas.create_text(
+                    (x1 + x2) / 2,
+                    top + 14,
+                    text=label,
+                    fill="#000000",
+                    font=("Segoe UI", 10, "bold"),
+                )
 
     def _draw_series(
         self,
@@ -3352,43 +3596,48 @@ class AverageValuesChartPanel(ttk.Frame):
         chart_type = self.chart_type_var.get()
         for item in series:
             if chart_type == "bar":
-                self._draw_bar_series(item.points, left, top, right, bottom, x_min, x_max, y_min, y_max, item.color)
+                self._draw_bar_series(self._visible_points(item.points), left, top, right, bottom, x_min, x_max, y_min, y_max, item.color)
                 continue
-            render_points = item.points
-            if self._smooth_enabled() and len(item.points) >= 5:
-                render_points = self._savitzky_golay_points(item.points)
-            coords = [
-                (
-                    self._x_to_canvas(x_value, left, right, x_min, x_max),
-                    self._y_to_canvas(y_value, top, bottom, y_min, y_max),
-                )
-                for x_value, y_value in render_points
-            ]
-            for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
-                clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
-                if clipped is None:
-                    continue
-                self.canvas.create_line(
-                    *clipped,
-                    fill=item.color,
-                    width=self._series_line_width(item.name, line_width),
-                    smooth=False,
-                )
-            if self.show_points_var.get() or chart_type == "scatter":
-                point_source = item.points if chart_type != "scatter" else render_points
-                for x_value, y_value in point_source:
-                    x = self._x_to_canvas(x_value, left, right, x_min, x_max)
-                    y = self._y_to_canvas(y_value, top, bottom, y_min, y_max)
-                    if x < left or x > right or y < top or y > bottom:
-                        continue
-                    self.canvas.create_oval(
-                        max(left, x - point_size),
-                        max(top, y - point_size),
-                        min(right, x + point_size),
-                        min(bottom, y + point_size),
-                        fill=item.color,
-                        outline="",
+            render_segments: list[list[tuple[float, float]]] = []
+            for segment in self._visible_point_segments(item.points):
+                if self._smooth_enabled() and len(segment) >= 5:
+                    render_segments.append(self._savitzky_golay_points(segment))
+                else:
+                    render_segments.append(segment)
+            for segment in render_segments:
+                coords = [
+                    (
+                        self._x_to_canvas(x_value, left, right, x_min, x_max),
+                        self._y_to_canvas(y_value, top, bottom, y_min, y_max),
                     )
+                    for x_value, y_value in segment
+                ]
+                for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+                    clipped = self._clip_line_to_rect(x1, y1, x2, y2, left, top, right, bottom)
+                    if clipped is None:
+                        continue
+                    self.canvas.create_line(
+                        *clipped,
+                        fill=item.color,
+                        width=self._series_line_width(item.name, line_width),
+                        smooth=False,
+                    )
+            if self.show_points_var.get() or chart_type == "scatter":
+                point_segments = render_segments if chart_type == "scatter" else self._visible_point_segments(item.points)
+                for segment in point_segments:
+                    for x_value, y_value in segment:
+                        x = self._x_to_canvas(x_value, left, right, x_min, x_max)
+                        y = self._y_to_canvas(y_value, top, bottom, y_min, y_max)
+                        if x < left or x > right or y < top or y > bottom:
+                            continue
+                        self.canvas.create_oval(
+                            max(left, x - point_size),
+                            max(top, y - point_size),
+                            min(right, x + point_size),
+                            min(bottom, y + point_size),
+                            fill=item.color,
+                            outline="",
+                        )
 
     def _draw_bar_series(
         self,
@@ -3694,7 +3943,9 @@ class AverageValuesChartPanel(ttk.Frame):
         if not self._series:
             return None, None, None, None
         xs = [x for item in self._series for x, _ in item.points]
-        ys = [y for item in self._series for _, y in item.points]
+        ys = [y for item in self._series for _x, y in self._visible_points(item.points)]
+        if not ys:
+            ys = [y for item in self._series for _, y in item.points]
         bounds = self._resolve_bounds(xs, ys)
         if bounds is None:
             return None, None, None, None
@@ -3710,10 +3961,12 @@ class AverageValuesChartPanel(ttk.Frame):
         self.y_max_var.set(self._format_tick(y_max))
 
     def _x_to_canvas(self, value: float, left: float, right: float, x_min: float, x_max: float) -> float:
-        span = x_max - x_min
-        if math.isclose(span, 0.0):
+        display_min, display_max = self._x_display_bounds(x_min, x_max)
+        display_span = display_max - display_min
+        if math.isclose(display_span, 0.0):
             return (left + right) / 2
-        return left + (value - x_min) * (right - left) / span
+        display_value = self._x_display_value(value, x_min, x_max)
+        return left + (display_value - display_min) * (right - left) / display_span
 
     def _y_to_canvas(self, value: float, top: float, bottom: float, y_min: float, y_max: float) -> float:
         span = y_max - y_min
@@ -3785,7 +4038,9 @@ class AverageValuesChartPanel(ttk.Frame):
         span = right - left
         if math.isclose(span, 0.0):
             return x_min
-        return x_min + (px - left) * (x_max - x_min) / span
+        display_min, display_max = self._x_display_bounds(x_min, x_max)
+        display_value = display_min + (px - left) * (display_max - display_min) / span
+        return self._display_to_x_value(display_value, x_min, x_max)
 
     def _canvas_to_y(self, py: float, top: float, bottom: float, y_min: float, y_max: float) -> float:
         span = bottom - top

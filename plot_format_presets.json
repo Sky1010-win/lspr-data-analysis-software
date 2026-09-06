@@ -357,5 +357,113 @@
       ]
     },
     "annotations": []
+  },
+  "As3+_Pb2+Cd2+": {
+    "title": "AsIII_PbII_CdII VS Time [s]",
+    "x_title": "Time [s]",
+    "running_buffer": "5*SSC",
+    "lspr_font_size": "10",
+    "chart_type": "line",
+    "line_width": "2",
+    "point_size": "3",
+    "step": "1",
+    "show_points": false,
+    "show_grid": true,
+    "show_legend": true,
+    "show_right_labels": true,
+    "smooth": false,
+    "smooth_window": 0,
+    "grid_density": 6,
+    "x_tick_count": 17,
+    "y_tick_count": 8,
+    "grid_color": "#eeeeee",
+    "grid_width": "1",
+    "grid_style": "dash",
+    "tick_font_size": "12",
+    "tick_bold": true,
+    "stage_opacity": 77,
+    "axis_break_ranges": [
+      [
+        2000.0,
+        9000.0
+      ]
+    ],
+    "hidden_time_ranges": [
+      [
+        2000.0,
+        9000.0
+      ]
+    ],
+    "series_labels": {
+      "As_1": "As_1",
+      "As2_2": "As2_2",
+      "Pb_3": "Pb_3",
+      "Pb2_4": "Pb2_4",
+      "Hg_5": "Hg_5",
+      "Cd_6": "Cd_6",
+      "M69_7": "M69_7",
+      "Dic1_8": "Dic1_8",
+      "Dic2_9": "Dic2_9",
+      "Carb_10": "Carb_10",
+      "CRS11": "CRS11",
+      "Pen_12": "Pen_12",
+      "Au_13": "Au_13",
+      "Zn_14": "Zn_14",
+      "PFA_15": "PFA_15",
+      "M69_16": "M69_16"
+    },
+    "series_colors": {
+      "As_1": "#e03e3e",
+      "As2_2": "#e07b3e",
+      "Pb_3": "#e0b83e",
+      "Pb2_4": "#cce03e",
+      "Hg_5": "#8fe03e",
+      "Cd_6": "#53e03e",
+      "M69_7": "#3ee067",
+      "Dic1_8": "#3ee0a3",
+      "Dic2_9": "#3ee0e0",
+      "Carb_10": "#3ea3e0",
+      "CRS11": "#3e67e0",
+      "Pen_12": "#533ee0",
+      "Au_13": "#8f3ee0",
+      "Zn_14": "#cc3ee0",
+      "PFA_15": "#e03eb8",
+      "M69_16": "#e03e7b"
+    },
+    "series_widths": {
+      "As_1": "4",
+      "As2_2": "4",
+      "Pb_3": "4",
+      "Pb2_4": "4",
+      "Hg_5": "4",
+      "Cd_6": "4",
+      "M69_7": "4",
+      "Dic1_8": "4",
+      "Dic2_9": "4",
+      "Carb_10": "4",
+      "CRS11": "4",
+      "Pen_12": "4",
+      "Au_13": "4",
+      "Zn_14": "4",
+      "PFA_15": "4",
+      "M69_16": "4"
+    },
+    "legend_position": [
+      1552.0,
+      48.0
+    ],
+    "right_label_positions": {
+      "PFA_15": [
+        1509.0,
+        138.5
+      ]
+    },
+    "annotations": [
+      {
+        "x": 529.0,
+        "y": 274.0,
+        "text": "Folding 2h"
+      }
+    ]
   }
 }
