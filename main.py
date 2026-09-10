@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import font
 from tkinter import filedialog, messagebox, ttk
 
+# test github sync
 try:
     import pandas as pd
 except ModuleNotFoundError:
@@ -1999,7 +2000,7 @@ class DataAnalysisApp(tk.Tk):
             return ""
         try:
             number = Decimal(str(value))
-        except InvalidOperation:
+        except InvalidOperation:git status
             return ""
         return str(number.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 
