@@ -772,6 +772,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._series: list[PlotSeries] = []
         self._series_labels: dict[str, str] = {}
         self._series_colors: dict[str, str] = {}
+        self._series_shades: dict[str, str] = {}
         self._series_widths: dict[str, str] = {}
         self._stage_regions: list[tuple[float, float, str, str]] = []
         self._target_regions: list[tuple[float, float, str, str]] = []
@@ -780,6 +781,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self._lspr_shift_items: list[dict[str, object]] = []
         self._lspr_bar_entries: list[dict[str, object]] = []
         self._right_label_positions: dict[str, tuple[float, float]] = {}
+        self._hidden_right_labels: set[str] = set()
+        self._title_positions: dict[str, tuple[float, float]] = {}
         self._draggables: list[dict[str, object]] = []
         self._drag_target: dict[str, object] | None = None
         self._drag_offset: tuple[float, float] = (0.0, 0.0)
@@ -969,11 +972,12 @@ class AverageValuesChartPanel(ttk.Frame):
         ttk.Label(action_bar, text="Text").grid(row=1, column=0, padx=(0, 4), pady=(6, 0), sticky="w")
         ttk.Entry(action_bar, textvariable=self.text_var, width=34).grid(row=1, column=1, columnspan=2, padx=(0, 8), pady=(6, 0), sticky="w")
         ttk.Button(action_bar, text="Insert Text", command=self._begin_text_mode, width=APP_BUTTON_WIDTH).grid(row=1, column=3, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Label(action_bar, text="Format").grid(row=1, column=4, padx=(8, 4), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Labels", command=lambda: self.open_plot_settings("Labels"), width=APP_BUTTON_WIDTH).grid(row=1, column=4, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="Format").grid(row=1, column=5, padx=(8, 4), pady=(6, 0), sticky="w")
         self.format_box = ttk.Combobox(action_bar, textvariable=self.format_preset_var, width=18, state="readonly")
-        self.format_box.grid(row=1, column=5, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Button(action_bar, text="Save Format", command=self.save_format_preset, width=APP_BUTTON_WIDTH).grid(row=1, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Button(action_bar, text="Apply Format", command=self.apply_selected_format_preset, width=APP_BUTTON_WIDTH).grid(row=1, column=7, padx=(0, 8), pady=(6, 0), sticky="w")
+        self.format_box.grid(row=1, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Save Format", command=self.save_format_preset, width=APP_BUTTON_WIDTH).grid(row=1, column=7, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Apply Format", command=self.apply_selected_format_preset, width=APP_BUTTON_WIDTH).grid(row=1, column=8, padx=(0, 8), pady=(6, 0), sticky="w")
         ttk.Label(action_bar, text="Running Buffer").grid(row=2, column=0, padx=(0, 4), pady=(6, 0), sticky="w")
         self.running_buffer_box = ttk.Combobox(
             action_bar,
@@ -1082,6 +1086,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
         self._right_label_positions = {}
+        self._title_positions = {}
         self._draggables = []
         self._drag_target = None
         self._view_bounds = None
@@ -1594,6 +1599,12 @@ class AverageValuesChartPanel(ttk.Frame):
             self.format_preset_var.set(names[0])
 
     def _collect_format_preset(self) -> dict:
+        curve_names = self._selected_y_names() or self.headers[1:]
+        hidden_indexes = [
+            index
+            for index, name in enumerate(curve_names)
+            if name in self._hidden_right_labels
+        ]
         return {
             "title": self.title_var.get(),
             "x_title": self.x_title_var.get(),
@@ -1622,9 +1633,13 @@ class AverageValuesChartPanel(ttk.Frame):
             "hidden_time_ranges": [list(item) for item in self._hidden_time_ranges],
             "series_labels": dict(self._series_labels),
             "series_colors": dict(self._series_colors),
+            "series_shades": dict(self._series_shades),
             "series_widths": dict(self._series_widths),
+            "hidden_right_labels": sorted(self._hidden_right_labels),
+            "hidden_right_label_indexes": hidden_indexes,
             "legend_position": list(self._legend_position) if self._legend_position else None,
             "right_label_positions": {key: list(value) for key, value in self._right_label_positions.items()},
+            "title_positions": {key: list(value) for key, value in self._title_positions.items()},
             "annotations": [dict(item) for item in self._annotations],
         }
 
@@ -1662,7 +1677,21 @@ class AverageValuesChartPanel(ttk.Frame):
 
         self._series_labels.update(self._string_dict(preset.get("series_labels", {})))
         self._series_colors.update(self._string_dict(preset.get("series_colors", {})))
+        self._series_shades.update(self._string_dict(preset.get("series_shades", {})))
         self._series_widths.update(self._string_dict(preset.get("series_widths", {})))
+        current_curve_names = self._selected_y_names() or self.headers[1:]
+        hidden_labels = preset.get("hidden_right_labels", [])
+        hidden_indexes = preset.get("hidden_right_label_indexes", [])
+        hidden_names = {str(name) for name in hidden_labels} if isinstance(hidden_labels, list) else set()
+        if isinstance(hidden_indexes, list):
+            for raw_index in hidden_indexes:
+                try:
+                    index = int(raw_index)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < len(current_curve_names):
+                    hidden_names.add(current_curve_names[index])
+        self._hidden_right_labels = hidden_names
         legend_position = preset.get("legend_position")
         self._legend_position = self._point_tuple(legend_position)
         raw_positions = preset.get("right_label_positions", {})
@@ -1671,6 +1700,14 @@ class AverageValuesChartPanel(ttk.Frame):
         self._right_label_positions = {
             str(key): value
             for key, raw in raw_positions.items()
+            if (value := self._point_tuple(raw)) is not None
+        }
+        raw_title_positions = preset.get("title_positions", {})
+        if not isinstance(raw_title_positions, dict):
+            raw_title_positions = {}
+        self._title_positions = {
+            str(key): value
+            for key, raw in raw_title_positions.items()
             if (value := self._point_tuple(raw)) is not None
         }
         annotations = preset.get("annotations", [])
@@ -1720,9 +1757,11 @@ class AverageValuesChartPanel(ttk.Frame):
 
         general = ttk.Frame(notebook, padding=10)
         curves = ttk.Frame(notebook, padding=10)
+        labels_tab = ttk.Frame(notebook, padding=10)
         stages = ttk.Frame(notebook, padding=10)
         notebook.add(general, text="General")
         notebook.add(curves, text="Curves")
+        notebook.add(labels_tab, text="Labels")
         notebook.add(stages, text="Stages")
 
         general.columnconfigure(1, weight=1)
@@ -1773,42 +1812,184 @@ class AverageValuesChartPanel(ttk.Frame):
 
         curves.columnconfigure(1, weight=1)
         curve_names = self._selected_y_names() or self.headers[1:]
-        style_controls: list[tuple[str, tk.StringVar, tk.StringVar, tk.StringVar, tk.Button]] = []
+        style_controls: list[tuple[str, tk.StringVar, tk.StringVar, tk.Variable, tk.StringVar, tk.Button]] = []
         if not curve_names:
             ttk.Label(curves, text="Create a plot first.").grid(row=0, column=0, sticky="w")
+        global_color_var = tk.StringVar(value=self._series_colors.get(curve_names[0], "#1f77b4") if curve_names else "#1f77b4")
+        global_shade_var = tk.DoubleVar(value=100.0)
+        global_shade_label_var = tk.StringVar(value="100")
+        global_width_var = tk.StringVar(value=self.line_width_var.get() or "2")
+        global_bar = ttk.Frame(curves)
+        global_bar.grid(row=0, column=0, columnspan=7, sticky="ew", pady=(0, 8))
+        ttk.Label(global_bar, text="All Curves").grid(row=0, column=0, padx=(0, 8), sticky="w")
+        global_color_button = tk.Button(global_bar, text="     ", bg=global_color_var.get(), width=4)
+        global_color_button.grid(row=0, column=1, padx=(0, 8), sticky="w")
+        ttk.Label(global_bar, text="Shade").grid(row=0, column=2, padx=(0, 4), sticky="w")
+        ttk.Scale(
+            global_bar,
+            from_=0,
+            to=200,
+            variable=global_shade_var,
+            orient="horizontal",
+            length=120,
+            command=lambda value: global_shade_label_var.set(str(int(float(value)))),
+        ).grid(row=0, column=3, padx=(0, 4), sticky="w")
+        ttk.Label(global_bar, textvariable=global_shade_label_var, width=4).grid(row=0, column=4, padx=(0, 8), sticky="w")
+        ttk.Label(global_bar, text="Width").grid(row=0, column=5, padx=(0, 4), sticky="w")
+        ttk.Spinbox(global_bar, from_=1, to=12, textvariable=global_width_var, width=5).grid(row=0, column=6, padx=(0, 8), sticky="w")
+
+        def choose_global_color() -> None:
+            chosen = colorchooser.askcolor(color=global_color_var.get(), parent=window)
+            if chosen and chosen[1]:
+                global_color_var.set(chosen[1])
+                global_color_button.configure(bg=chosen[1])
+
+        def apply_all_curves() -> None:
+            base_color = global_color_var.get().strip() or "#000000"
+            shade = self._clamped_number_var(global_shade_var, 100, 0, 200)
+            display_color = self._shade_color(base_color, shade)
+            width = str(self._clamped_int_text(global_width_var, 2, 1, 12))
+            self.line_width_var.set(width)
+            for name, _label_var, color_var, shade_var, width_var, color_button in style_controls:
+                color_var.set(base_color)
+                shade_var.set(shade)
+                width_var.set(width)
+                self._series_colors[name] = base_color
+                self._series_shades[name] = str(shade)
+                self._series_widths[name] = width
+                color_button.configure(bg=display_color)
+            self.draw_chart()
+
+        global_color_button.configure(command=choose_global_color)
+        ttk.Button(global_bar, text="Apply All", command=apply_all_curves, width=APP_BUTTON_WIDTH).grid(row=0, column=7, padx=(0, 8), sticky="w")
         for row, name in enumerate(curve_names):
             color = self._series_colors.get(name, self._series_color(row, len(curve_names)))
             label_var = tk.StringVar(value=self._series_labels.get(name, name))
             color_var = tk.StringVar(value=color)
+            try:
+                initial_shade = float(self._series_shades.get(name, "100"))
+            except (TypeError, ValueError):
+                initial_shade = 100.0
+            initial_shade = max(0.0, min(200.0, initial_shade))
+            shade_var = tk.DoubleVar(value=initial_shade)
+            shade_label_var = tk.StringVar(value=str(int(initial_shade)))
             width_var = tk.StringVar(value=self._series_widths.get(name, self.line_width_var.get() or "2"))
             self._series_labels[name] = label_var.get()
             self._series_colors[name] = color_var.get()
+            self._series_shades.setdefault(name, str(int(initial_shade)))
             self._series_widths[name] = width_var.get()
-            ttk.Label(curves, text=name).grid(row=row, column=0, sticky="w", pady=3, padx=(0, 8))
-            ttk.Entry(curves, textvariable=label_var).grid(row=row, column=1, sticky="ew", pady=3, padx=(0, 8))
-            color_button = tk.Button(curves, text="     ", bg=color_var.get(), width=4)
-            color_button.grid(row=row, column=2, sticky="w", pady=3)
-            ttk.Label(curves, text="Width").grid(row=row, column=3, sticky="e", padx=(8, 4), pady=3)
-            ttk.Spinbox(curves, from_=1, to=12, textvariable=width_var, width=5).grid(row=row, column=4, sticky="w", pady=3)
-            style_controls.append((name, label_var, color_var, width_var, color_button))
+            grid_row = row + 1
+            ttk.Label(curves, text=name).grid(row=grid_row, column=0, sticky="w", pady=3, padx=(0, 8))
+            ttk.Entry(curves, textvariable=label_var).grid(row=grid_row, column=1, sticky="ew", pady=3, padx=(0, 8))
+            color_button = tk.Button(curves, text="     ", bg=self._shade_color(color_var.get(), int(initial_shade)), width=4)
+            color_button.grid(row=grid_row, column=2, sticky="w", pady=3)
+            ttk.Label(curves, text="Shade").grid(row=grid_row, column=3, sticky="e", padx=(8, 4), pady=3)
+            ttk.Scale(
+                curves,
+                from_=0,
+                to=200,
+                variable=shade_var,
+                orient="horizontal",
+                length=110,
+                command=lambda value, v=shade_label_var: v.set(str(int(float(value)))),
+            ).grid(row=grid_row, column=4, sticky="w", pady=3)
+            ttk.Label(curves, textvariable=shade_label_var, width=4).grid(row=grid_row, column=5, sticky="w", pady=3)
+            ttk.Label(curves, text="Width").grid(row=grid_row, column=6, sticky="e", padx=(8, 4), pady=3)
+            ttk.Spinbox(curves, from_=1, to=12, textvariable=width_var, width=5).grid(row=grid_row, column=7, sticky="w", pady=3)
+            style_controls.append((name, label_var, color_var, shade_var, width_var, color_button))
 
-            def save_curve(n=name, lv=label_var, cv=color_var, wv=width_var, btn=color_button) -> None:
+            def save_curve(n=name, lv=label_var, cv=color_var, sv=shade_var, wv=width_var, btn=color_button) -> None:
                 self._series_labels[n] = lv.get().strip() or n
-                self._series_colors[n] = cv.get().strip() or self._series_colors.get(n, "#000000")
+                base_color = cv.get().strip() or self._series_colors.get(n, "#000000")
+                shade = self._clamped_number_var(sv, 100, 0, 200)
+                self._series_colors[n] = base_color
+                self._series_shades[n] = str(shade)
                 self._series_widths[n] = str(self._clamped_int_text(wv, 2, 1, 12))
-                btn.configure(bg=self._series_colors[n])
+                btn.configure(bg=self._shade_color(base_color, shade))
                 self.draw_chart()
 
-            def choose_color(n=name, cv=color_var, btn=color_button) -> None:
+            def choose_color(n=name, cv=color_var, sv=shade_var, btn=color_button) -> None:
                 chosen = colorchooser.askcolor(color=cv.get(), parent=window)
                 if chosen and chosen[1]:
                     cv.set(chosen[1])
                     self._series_colors[n] = chosen[1]
-                    btn.configure(bg=chosen[1])
+                    btn.configure(bg=self._shade_color(chosen[1], self._clamped_number_var(sv, 100, 0, 200)))
                     self.draw_chart()
 
             color_button.configure(command=choose_color)
-            ttk.Button(curves, text="Apply", command=save_curve, width=APP_BUTTON_WIDTH).grid(row=row, column=5, padx=(8, 0), pady=3)
+            ttk.Button(curves, text="Apply", command=save_curve, width=APP_BUTTON_WIDTH).grid(row=grid_row, column=8, padx=(8, 0), pady=3)
+
+        labels_tab.columnconfigure(0, weight=1)
+        labels_tab.columnconfigure(2, weight=1)
+        ttk.Label(labels_tab, text="Right-side curve labels").grid(row=0, column=0, sticky="w")
+        right_label_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=10)
+        right_label_list.grid(row=1, column=0, sticky="nsew", pady=(4, 8), padx=(0, 8))
+        labels_tab.rowconfigure(1, weight=1)
+        for name in curve_names:
+            label = self._series_labels.get(name, name)
+            state = "hidden" if name in self._hidden_right_labels else "shown"
+            right_label_list.insert(tk.END, f"{label}  [{state}]")
+
+        right_buttons = ttk.Frame(labels_tab)
+        right_buttons.grid(row=1, column=1, sticky="ns", padx=(0, 16))
+
+        def hide_selected_right_labels() -> None:
+            for index in right_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    self._hidden_right_labels.add(curve_names[index])
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
+        def show_all_right_labels() -> None:
+            self._hidden_right_labels.clear()
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
+        def hide_all_right_labels() -> None:
+            self._hidden_right_labels = set(curve_names)
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
+        ttk.Button(right_buttons, text="Hide", command=hide_selected_right_labels, width=APP_BUTTON_WIDTH).grid(row=0, column=0, pady=(0, 6))
+        ttk.Button(right_buttons, text="Hide All", command=hide_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=1, column=0, pady=(0, 6))
+        ttk.Button(right_buttons, text="Show All", command=show_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=2, column=0)
+
+        ttk.Label(labels_tab, text="Inserted text labels").grid(row=0, column=2, sticky="w")
+        annotation_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=10)
+        annotation_list.grid(row=1, column=2, sticky="nsew", pady=(4, 8))
+        for annotation in self._annotations:
+            text = str(annotation.get("text", "")).strip()
+            annotation_list.insert(tk.END, text if text else "(empty)")
+        annotation_buttons = ttk.Frame(labels_tab)
+        annotation_buttons.grid(row=2, column=2, sticky="w")
+
+        def add_text_label() -> None:
+            text = simpledialog.askstring("Add Plot Label", "Text:", parent=window)
+            if text is None:
+                return
+            text = text.strip()
+            if not text:
+                return
+            width = max(self.canvas.winfo_width(), 600)
+            height = max(self.canvas.winfo_height(), 380)
+            self._annotations.append({"x": float(width * 0.5), "y": float(height * 0.18), "text": text})
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
+        def delete_selected_text_labels() -> None:
+            for index in sorted(annotation_list.curselection(), reverse=True):
+                if 0 <= index < len(self._annotations):
+                    del self._annotations[index]
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
+        ttk.Button(annotation_buttons, text="Add Text", command=add_text_label, width=APP_BUTTON_WIDTH).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(annotation_buttons, text="Delete", command=delete_selected_text_labels, width=APP_BUTTON_WIDTH).grid(row=0, column=1)
 
         stages.columnconfigure(0, weight=1)
         ttk.Label(
@@ -1827,11 +2008,14 @@ class AverageValuesChartPanel(ttk.Frame):
 
         def apply_settings() -> None:
             self.y_title_var.set(self._locked_y_axis_title())
-            for name, label_var, color_var, width_var, color_button in style_controls:
+            for name, label_var, color_var, shade_var, width_var, color_button in style_controls:
                 self._series_labels[name] = label_var.get().strip() or name
-                self._series_colors[name] = color_var.get().strip() or self._series_colors.get(name, "#000000")
+                base_color = color_var.get().strip() or self._series_colors.get(name, "#000000")
+                shade = self._clamped_number_var(shade_var, 100, 0, 200)
+                self._series_colors[name] = base_color
+                self._series_shades[name] = str(shade)
                 self._series_widths[name] = str(self._clamped_int_text(width_var, 2, 1, 12))
-                color_button.configure(bg=self._series_colors[name])
+                color_button.configure(bg=self._shade_color(base_color, shade))
             stage_text_value = stage_text.get("1.0", "end").strip()
             if self._is_default_stage_example(stage_text_value):
                 stage_text_value = ""
@@ -1848,6 +2032,8 @@ class AverageValuesChartPanel(ttk.Frame):
         ttk.Button(button_bar, text="Apply and Close", command=lambda: (apply_settings(), window.destroy()), width=APP_BUTTON_WIDTH).grid(row=0, column=2)
         if initial_tab == "Curves":
             notebook.select(curves)
+        elif initial_tab == "Labels":
+            notebook.select(labels_tab)
 
     def refresh_from_source(self) -> None:
         if callable(self._refresh_callback):
@@ -2915,6 +3101,7 @@ class AverageValuesChartPanel(ttk.Frame):
         scale: float,
     ) -> None:
         labels = [(item.points[-1][1], item) for item in series if item.points]
+        labels = [(value, item) for value, item in labels if item.name not in self._hidden_right_labels]
         labels.sort(reverse=True, key=lambda pair: pair[0])
         if len(labels) == 1:
             y_positions = [(top + bottom) / 2]
@@ -2931,9 +3118,19 @@ class AverageValuesChartPanel(ttk.Frame):
     def _draw_export_titles(self, image, draw, width: int, left: int, right: int, top: int, bottom: int, x_name: str, y_names: list[str], title_font, axis_font) -> None:
         title = self.title_var.get().strip() or f"{', '.join(self._series_labels.get(name, name) for name in y_names)} vs {x_name}"
         scale = width / max(max(self.canvas.winfo_width(), 600), 1)
-        self._draw_export_centered_text(draw, width / 2, 22 * scale, title, title_font, fill="#222222")
-        self._draw_export_centered_text(draw, (left + right) / 2, bottom + 64 * scale, self.x_title_var.get().strip() or x_name, axis_font, fill="#111111")
-        self._draw_export_rotated_text(image, draw, max(30 * scale, left - 58 * scale), (top + bottom) / 2, self._locked_y_axis_title(), axis_font)
+        main_x, main_y = self._export_title_position("main", width / 2, 22 * scale, scale)
+        x_title_x, x_title_y = self._export_title_position("x", (left + right) / 2, bottom + 64 * scale, scale)
+        y_title_x, y_title_y = self._export_title_position("y", max(30 * scale, left - 58 * scale), (top + bottom) / 2, scale)
+        self._draw_export_centered_text(draw, main_x, main_y, title, title_font, fill="#222222")
+        self._draw_export_centered_text(draw, x_title_x, x_title_y, self.x_title_var.get().strip() or x_name, axis_font, fill="#111111")
+        self._draw_export_rotated_text(image, draw, y_title_x, y_title_y, self._locked_y_axis_title(), axis_font)
+
+    def _export_title_position(self, key: str, default_x: float, default_y: float, scale: float) -> tuple[float, float]:
+        position = self._title_positions.get(key)
+        if position is None:
+            return default_x, default_y
+        x, y = position
+        return float(x) * scale, float(y) * scale
 
     def _draw_export_annotations(self, draw, font, scale: float) -> None:
         for annotation in self._annotations:
@@ -3006,6 +3203,51 @@ class AverageValuesChartPanel(ttk.Frame):
         parsed = max(1, min(12, parsed))
         self._series_widths[name] = str(parsed)
         return parsed
+
+    def _clamped_number_var(self, var: tk.Variable, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(round(float(var.get())))
+        except (tk.TclError, ValueError, TypeError):
+            value = default
+        value = max(minimum, min(maximum, value))
+        try:
+            var.set(value)
+        except tk.TclError:
+            pass
+        return value
+
+    def _shade_color(self, color: str, percent: int) -> str:
+        text = str(color).strip()
+        if not text.startswith("#") or len(text) != 7:
+            return text or "#000000"
+        try:
+            red = int(text[1:3], 16)
+            green = int(text[3:5], 16)
+            blue = int(text[5:7], 16)
+        except ValueError:
+            return "#000000"
+        percent = max(0, min(200, int(percent)))
+        if percent == 100:
+            return f"#{red:02x}{green:02x}{blue:02x}"
+        if percent < 100:
+            factor = (percent / 100.0) ** 0.35 if percent > 0 else 0.0
+            red = round(red * factor)
+            green = round(green * factor)
+            blue = round(blue * factor)
+        else:
+            factor = (percent - 100) / 100.0
+            red = round(red + (255 - red) * factor)
+            green = round(green + (255 - green) * factor)
+            blue = round(blue + (255 - blue) * factor)
+        return f"#{red:02x}{green:02x}{blue:02x}"
+
+    def _series_display_color(self, name: str, fallback: str) -> str:
+        base_color = self._series_colors.get(name, fallback)
+        try:
+            shade = int(float(self._series_shades.get(name, "100")))
+        except (TypeError, ValueError):
+            shade = 100
+        return self._shade_color(base_color, shade)
 
     def _grid_dash_pattern(self, scale: float = 1.0):
         style = self.grid_style_var.get().strip().lower()
@@ -3258,9 +3500,11 @@ class AverageValuesChartPanel(ttk.Frame):
                 points.append((x_value, y_value))
             if points:
                 label = self._series_labels.get(y_name, y_name)
-                color = self._series_colors.get(y_name, self._series_color(index, len(y_names)))
+                base_color = self._series_colors.get(y_name, self._series_color(index, len(y_names)))
+                color = self._series_display_color(y_name, base_color)
                 self._series_labels.setdefault(y_name, label)
-                self._series_colors.setdefault(y_name, color)
+                self._series_colors.setdefault(y_name, base_color)
+                self._series_shades.setdefault(y_name, "100")
                 series.append(PlotSeries(name=y_name, label=label, points=points, color=color))
         return series
 
@@ -3687,30 +3931,42 @@ class AverageValuesChartPanel(ttk.Frame):
 
     def _draw_titles(self, width: int, x_name: str, y_names: list[str]) -> None:
         title = self.title_var.get().strip() or f"{', '.join(self._series_labels.get(name, name) for name in y_names)} vs {x_name}"
-        self.canvas.create_text(
-            width / 2,
-            22,
+        title_x, title_y = self._title_positions.get("main", (width / 2, 22))
+        title_tag = "drag_plot_title_main"
+        title_id = self.canvas.create_text(
+            title_x,
+            title_y,
             text=title,
             font=("Segoe UI", 14, "bold"),
             fill="#222222",
+            tags=(title_tag,),
         )
+        self._register_draggable("plot_title", "main", title_id, tag=title_tag)
         if self._plot_rect is not None:
             left, top, right, bottom = self._plot_rect
-            self.canvas.create_text(
-                (left + right) / 2,
-                bottom + 64,
+            x_title_x, x_title_y = self._title_positions.get("x", ((left + right) / 2, bottom + 64))
+            x_title_tag = "drag_plot_title_x"
+            x_title_id = self.canvas.create_text(
+                x_title_x,
+                x_title_y,
                 text=self.x_title_var.get().strip() or x_name,
                 font=("Segoe UI", 13, "bold"),
                 fill="#111111",
+                tags=(x_title_tag,),
             )
-            self.canvas.create_text(
-                max(30, left - 58),
-                (top + bottom) / 2,
+            self._register_draggable("plot_title", "x", x_title_id, tag=x_title_tag)
+            y_title_x, y_title_y = self._title_positions.get("y", (max(30, left - 58), (top + bottom) / 2))
+            y_title_tag = "drag_plot_title_y"
+            y_title_id = self.canvas.create_text(
+                y_title_x,
+                y_title_y,
                 text=self._locked_y_axis_title(),
                 angle=90,
                 font=("Segoe UI", 13, "bold"),
                 fill="#111111",
+                tags=(y_title_tag,),
             )
+            self._register_draggable("plot_title", "y", y_title_id, tag=y_title_tag)
 
     def _draw_right_labels(
         self,
@@ -3723,6 +3979,8 @@ class AverageValuesChartPanel(ttk.Frame):
             return
         labels: list[tuple[float, PlotSeries]] = []
         for item in series:
+            if item.name in self._hidden_right_labels:
+                continue
             if not item.points:
                 continue
             labels.append((item.points[-1][1], item))
@@ -3786,6 +4044,8 @@ class AverageValuesChartPanel(ttk.Frame):
                 self._right_label_positions.setdefault(str(target.get("key", "")), (current_x, current_y))
             elif target.get("kind") == "legend":
                 self._legend_position = self._legend_position or (current_x, current_y)
+            elif target.get("kind") == "plot_title":
+                self._title_positions.setdefault(str(target.get("key", "")), (current_x, current_y))
             self._drag_offset = (current_x - event.x, current_y - event.y)
             self._drag_last = (event.x, event.y)
             return
@@ -3846,6 +4106,10 @@ class AverageValuesChartPanel(ttk.Frame):
                 return self._legend_position
             left, top, _right, _bottom = target["bbox"]
             return float(left) + 4, float(top) + 4
+        if target.get("kind") == "plot_title":
+            key = str(target.get("key", ""))
+            if key in self._title_positions:
+                return self._title_positions[key]
         left, top, right, bottom = target["bbox"]
         return (float(left) + float(right)) / 2, (float(top) + float(bottom)) / 2
 
@@ -3880,6 +4144,9 @@ class AverageValuesChartPanel(ttk.Frame):
         elif kind == "legend":
             x, y = self._legend_position or self._draggable_position(self._drag_target)
             self._legend_position = (x + dx, y + dy)
+        elif kind == "plot_title":
+            x, y = self._title_positions.get(str(key), self._draggable_position(self._drag_target))
+            self._title_positions[str(key)] = (x + dx, y + dy)
 
     def _move_draggable(self, x: float, y: float) -> None:
         if self._drag_target is None:
@@ -3900,6 +4167,8 @@ class AverageValuesChartPanel(ttk.Frame):
             self._right_label_positions[str(key)] = (float(x), float(y))
         elif kind == "legend":
             self._legend_position = (float(x), float(y))
+        elif kind == "plot_title":
+            self._title_positions[str(key)] = (float(x), float(y))
         self.draw_chart()
 
     def _on_mousewheel(self, event: tk.Event) -> str | None:

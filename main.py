@@ -58,6 +58,8 @@ class DataAnalysisApp(tk.Tk):
         self.last_frame_total_column_name: str | None = None
         self.average_values_data: list[list[str]] = []
         self.average_values_headers: list[str] = []
+        self.sheet_context_menu: tk.Menu | None = None
+        self.sheet_context_target: dict[str, int | None] = {"row": None, "column": None}
         self.average_sheet_context_menu: tk.Menu | None = None
         self.average_sheet_context_target: dict[str, int | None] = {"row": None, "column": None}
         self.average_values_manager: AverageValuesManager | None = None
@@ -172,6 +174,7 @@ class DataAnalysisApp(tk.Tk):
         self.style = ttk.Style(self)
         self.report_font = font.Font(family="Consolas", size=10)
         self.sheet = self._create_sheet()
+        self._build_sheet_context_menu()
         self.average_values_manager = AverageValuesManager(self, self.average_frame)
         self.plot_panel = AverageValuesChartPanel(self.plot_frame, refresh_callback=self.update_curve_plot)
         self.plot_panel.grid(row=0, column=0, sticky="nsew")
@@ -330,12 +333,7 @@ class DataAnalysisApp(tk.Tk):
         column_name = self._next_average_column_name()
         self._save_undo_snapshot()
         formatted_averages = averages.map(self._format_decimal_places).tolist()
-        self.data.insert(
-            insert_at,
-            column_name,
-            formatted_averages,
-            allow_duplicates=True,
-        )
+        self.data = self._insert_dataframe_columns(self.data, insert_at, [(column_name, formatted_averages)])
         self.average_columns = {index + 1 if index >= insert_at else index for index in self.average_columns}
         self.average_columns.add(insert_at)
         self.average_editable_cell = (0, insert_at)
@@ -454,6 +452,24 @@ class DataAnalysisApp(tk.Tk):
         if self.data is None or not (0 <= data_index < len(self.data.columns)):
             return None
         return data_index
+
+    def _insert_dataframe_columns(self, dataframe, insert_at: int, columns: list[tuple[str, list[object]]]):
+        if pd is None or dataframe is None or not columns:
+            return dataframe
+        insert_at = max(0, min(insert_at, len(dataframe.columns)))
+        row_count = len(dataframe)
+        new_data = {}
+        for offset, (name, values) in enumerate(columns):
+            column_values = list(values)
+            if len(column_values) < row_count:
+                column_values.extend([""] * (row_count - len(column_values)))
+            elif len(column_values) > row_count:
+                column_values = column_values[:row_count]
+            new_data[offset] = column_values
+        new_columns = pd.DataFrame(new_data, index=dataframe.index)
+        new_columns.columns = [name for name, _values in columns]
+        pieces = [dataframe.iloc[:, :insert_at], new_columns, dataframe.iloc[:, insert_at:]]
+        return pd.concat(pieces, axis=1).copy()
 
     def import_frame_total_to_average_values(self) -> None:
         if not self._ensure_dependencies():
@@ -959,16 +975,11 @@ class DataAnalysisApp(tk.Tk):
 
         insert_at = image_column_index + 1
         self._save_undo_snapshot()
-        inserted_names: list[str] = []
-        for offset, (column_name, values) in enumerate(zip(result.column_names, result.values_list)):
+        new_columns = list(zip(result.column_names, result.values_list))
+        self.data = self._insert_dataframe_columns(self.data, insert_at, new_columns)
+        inserted_names = [column_name for column_name, _values in new_columns]
+        for offset, (column_name, values) in enumerate(new_columns):
             insert_index = insert_at + offset
-            self.data.insert(
-                insert_index,
-                column_name,
-                values,
-                allow_duplicates=True,
-            )
-            inserted_names.append(column_name)
             if self.sheet is not None:
                 self._insert_sheet_column(insert_index, column_name, values)
         self.last_frame_total_column_name = result.column_names[0] if result.column_names else None
@@ -1189,7 +1200,15 @@ class DataAnalysisApp(tk.Tk):
         if bind_app_shortcuts:
             sheet.bind("<Control-z>", lambda event: self._undo_from_event())
             sheet.bind("<Control-Z>", lambda event: self._undo_from_event())
+        if target_parent is self.table_frame:
+            sheet.bind("<Button-3>", self._on_sheet_right_click, add="+")
+            sheet.bind("<Button-2>", self._on_sheet_right_click, add="+")
         return sheet
+
+    def _build_sheet_context_menu(self) -> None:
+        self.sheet_context_menu = tk.Menu(self, tearoff=0)
+        self.sheet_context_menu.add_command(label="Delete Row(s)", command=self._delete_selected_data_rows)
+        self.sheet_context_menu.add_command(label="Delete Column(s)", command=self._delete_selected_data_columns)
 
     def _bind_average_sheet_actions(self) -> None:
         if self.average_sheet is None:
@@ -1416,6 +1435,85 @@ class DataAnalysisApp(tk.Tk):
             self.selected_columns = selected_columns
             self.selected_rows = selected_rows
             self._apply_sheet_highlights()
+
+    def _on_sheet_right_click(self, event: tk.Event) -> str:
+        if self.sheet is None or self.sheet_context_menu is None or self.data is None:
+            return "break"
+
+        row = self.sheet.identify_row(event)
+        column = self.sheet.identify_column(event)
+        self.sheet_context_target = {"row": row, "column": column}
+
+        try:
+            region = self.sheet.identify_region(event)
+            if region == "header" and column is not None and column not in self.selected_columns:
+                self.selected_columns = {column}
+                self.selected_rows.clear()
+                self.sheet.select_column(column, redraw=False)
+            elif region == "index" and row is not None and row not in self.selected_rows:
+                self.selected_rows = {row}
+                self.selected_columns.clear()
+                self.sheet.select_row(row, redraw=False)
+            elif region == "table" and row is not None and column is not None:
+                if not self.selected_rows and not self.selected_columns:
+                    self.selected_rows = {row}
+                    self.sheet.select_row(row, redraw=False)
+            self._apply_sheet_highlights()
+            self.sheet_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.sheet_context_menu.grab_release()
+        return "break"
+
+    def _delete_selected_data_columns(self) -> None:
+        if self.data is None:
+            return
+        self._commit_average_column_name_edit()
+        self._sync_sheet_selection()
+        selected_columns = set(self.selected_columns)
+        if not selected_columns:
+            column = self.sheet_context_target.get("column")
+            if column is not None:
+                selected_columns.add(column)
+        selected_columns = {index for index in selected_columns if 0 <= index < len(self.data.columns)}
+        if not selected_columns:
+            return
+
+        self._save_undo_snapshot()
+        keep_columns = [index for index in range(len(self.data.columns)) if index not in selected_columns]
+        self.data = self.data.iloc[:, keep_columns].copy().reset_index(drop=True)
+        old_average_columns = set(self.average_columns)
+        self.average_columns = {
+            old_index - sum(1 for deleted_index in selected_columns if deleted_index < old_index)
+            for old_index in old_average_columns
+            if old_index not in selected_columns
+        }
+        self.selected_columns.clear()
+        self.selected_rows.clear()
+        self.average_editable_cell = None
+        self.load_note = f"Deleted {len(selected_columns)} column(s) from the Data Table."
+        self._show_data_table(keep_selection=True)
+
+    def _delete_selected_data_rows(self) -> None:
+        if self.data is None:
+            return
+        self._commit_average_column_name_edit()
+        self._sync_sheet_selection()
+        selected_rows = set(self.selected_rows)
+        if not selected_rows:
+            row = self.sheet_context_target.get("row")
+            if row is not None:
+                selected_rows.add(row)
+        selected_rows = {index for index in selected_rows if 0 <= index < len(self.data)}
+        if not selected_rows:
+            return
+
+        self._save_undo_snapshot()
+        self.data = self.data.drop(self.data.index[sorted(selected_rows)]).reset_index(drop=True)
+        self.selected_rows.clear()
+        self.selected_columns.clear()
+        self.average_editable_cell = None
+        self.load_note = f"Deleted {len(selected_rows)} row(s) from the Data Table."
+        self._show_data_table(keep_selection=True)
 
     def _toggle_column_selection(self, column_index: int) -> None:
         if column_index in self.selected_columns:
@@ -1826,12 +1924,13 @@ class DataAnalysisApp(tk.Tk):
         self.average_sheet_context_target = {"row": row, "column": column}
 
         try:
+            selected_columns, selected_rows = self._average_context_selection()
             region = self.average_sheet.identify_region(event)
-            if region == "header" and column is not None:
+            if region == "header" and column is not None and column not in selected_columns:
                 self.average_sheet.select_column(column, redraw=False)
-            elif region == "index" and row is not None:
+            elif region == "index" and row is not None and row not in selected_rows:
                 self.average_sheet.select_row(row, redraw=False)
-            elif region == "table" and row is not None and column is not None:
+            elif region == "table" and row is not None and column is not None and not selected_rows and not selected_columns:
                 self.average_sheet.select_cell(row, column, redraw=False)
             self.average_sheet.redraw()
             self.average_sheet_context_menu.tk_popup(event.x_root, event.y_root)
@@ -2000,7 +2099,7 @@ class DataAnalysisApp(tk.Tk):
             return ""
         try:
             number = Decimal(str(value))
-        except InvalidOperation:git status
+        except InvalidOperation:
             return ""
         return str(number.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 

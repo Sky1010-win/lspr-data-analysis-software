@@ -425,12 +425,13 @@ class AverageValuesManager:
         self.context_target = {"row": row, "column": column}
 
         try:
+            selected_columns, selected_rows = self._average_selection()
             region = self.sheet.identify_region(event)
-            if region == "header" and column is not None:
+            if region == "header" and column is not None and column not in selected_columns:
                 self.sheet.select_column(column, redraw=False)
-            elif region == "index" and row is not None:
+            elif region == "index" and row is not None and row not in selected_rows:
                 self.sheet.select_row(row, redraw=False)
-            elif region == "table" and row is not None and column is not None:
+            elif region == "table" and row is not None and column is not None and not selected_rows and not selected_columns:
                 self.sheet.select_cell(row, column, redraw=False)
             self.sheet.redraw()
             self.context_menu.tk_popup(event.x_root, event.y_root)
