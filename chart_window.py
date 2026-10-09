@@ -780,8 +780,12 @@ class AverageValuesChartPanel(ttk.Frame):
         self._annotations: list[dict[str, object]] = []
         self._lspr_shift_items: list[dict[str, object]] = []
         self._lspr_bar_entries: list[dict[str, object]] = []
+        self._pinned_lspr_groups: list[dict[str, object]] = []
+        self._next_lspr_group_id = 1
+        self._last_lspr_result_label = ""
         self._right_label_positions: dict[str, tuple[float, float]] = {}
         self._hidden_right_labels: set[str] = set()
+        self._hidden_legend_labels: set[str] = set()
         self._title_positions: dict[str, tuple[float, float]] = {}
         self._draggables: list[dict[str, object]] = []
         self._drag_target: dict[str, object] | None = None
@@ -808,6 +812,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self.hidden_range_label_var = tk.StringVar(value="Break 0")
         self.text_var = tk.StringVar()
         self.running_buffer_var = tk.StringVar(value="5*SSC")
+        self.running_buffer_compare_var = tk.StringVar(value="")
         self.target_stage_var = tk.StringVar()
         self.lspr_bar_target_var = tk.StringVar()
         self.lspr_font_size_var = tk.StringVar(value="10")
@@ -830,6 +835,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self.format_preset_var = tk.StringVar(value="")
         self._format_presets: dict[str, dict] = {}
         self.running_buffer_box: ttk.Combobox | None = None
+        self.running_buffer_compare_box: ttk.Combobox | None = None
         self.target_stage_box: ttk.Combobox | None = None
         self.lspr_bar_target_box: ttk.Combobox | None = None
         self.show_points_var = tk.BooleanVar(value=True)
@@ -982,24 +988,36 @@ class AverageValuesChartPanel(ttk.Frame):
         self.running_buffer_box = ttk.Combobox(
             action_bar,
             textvariable=self.running_buffer_var,
-            width=22,
+            width=16,
             state="readonly",
         )
         self.running_buffer_box.grid(row=2, column=1, padx=(0, 8), pady=(6, 0), sticky="w")
         self.running_buffer_box.bind("<Return>", lambda _event: self.calculate_lspr_shift_for_all_series())
         self.running_buffer_box.bind("<<ComboboxSelected>>", self._on_running_buffer_change)
-        ttk.Button(action_bar, text="LSPR Shift", command=self.calculate_lspr_shift_for_all_series, width=APP_BUTTON_WIDTH).grid(row=2, column=2, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Label(action_bar, text="Bar Target").grid(row=2, column=3, padx=(0, 4), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="to").grid(row=2, column=2, padx=(0, 4), pady=(6, 0), sticky="w")
+        self.running_buffer_compare_box = ttk.Combobox(
+            action_bar,
+            textvariable=self.running_buffer_compare_var,
+            width=16,
+            state="readonly",
+        )
+        self.running_buffer_compare_box.grid(row=2, column=3, padx=(0, 8), pady=(6, 0), sticky="w")
+        self.running_buffer_compare_box.bind("<Return>", lambda _event: self.calculate_lspr_shift_for_all_series())
+        self.running_buffer_compare_box.bind("<<ComboboxSelected>>", self._on_running_buffer_change)
+        ttk.Button(action_bar, text="LSPR Shift", command=self.calculate_lspr_shift_for_all_series, width=APP_BUTTON_WIDTH).grid(row=2, column=4, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="Bar Target").grid(row=2, column=5, padx=(0, 4), pady=(6, 0), sticky="w")
         self.lspr_bar_target_box = ttk.Combobox(
             action_bar,
             textvariable=self.lspr_bar_target_var,
             width=18,
             state="disabled",
         )
-        self.lspr_bar_target_box.grid(row=2, column=4, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Button(action_bar, text="LSPR Bar Chart", command=self.show_lspr_shift_bar_chart, width=APP_BUTTON_WIDTH).grid(row=2, column=5, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Button(action_bar, text="Clear LSPR", command=self.clear_lspr_shift, width=APP_BUTTON_WIDTH).grid(row=2, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
-        ttk.Label(action_bar, text="LSPR Font").grid(row=2, column=7, padx=(8, 4), pady=(6, 0), sticky="w")
+        self.lspr_bar_target_box.grid(row=2, column=6, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="LSPR Bar Chart", command=self.show_lspr_shift_bar_chart, width=APP_BUTTON_WIDTH).grid(row=2, column=7, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Clear LSPR", command=self.clear_lspr_shift, width=APP_BUTTON_WIDTH).grid(row=2, column=8, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Keep LSPR", command=self.keep_lspr_shift_result, width=APP_BUTTON_WIDTH).grid(row=2, column=9, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Button(action_bar, text="Manage LSPR", command=self.manage_lspr_shift_results, width=APP_BUTTON_WIDTH).grid(row=2, column=10, padx=(0, 8), pady=(6, 0), sticky="w")
+        ttk.Label(action_bar, text="LSPR Font").grid(row=2, column=11, padx=(8, 4), pady=(6, 0), sticky="w")
         lspr_font_spin = ttk.Spinbox(
             action_bar,
             from_=7,
@@ -1008,7 +1026,7 @@ class AverageValuesChartPanel(ttk.Frame):
             width=5,
             command=self.draw_chart,
         )
-        lspr_font_spin.grid(row=2, column=8, padx=(0, 8), pady=(6, 0), sticky="w")
+        lspr_font_spin.grid(row=2, column=12, padx=(0, 8), pady=(6, 0), sticky="w")
         lspr_font_spin.bind("<Return>", lambda _event: self.draw_chart())
         lspr_font_spin.bind("<FocusOut>", lambda _event: self.draw_chart())
         ttk.Label(action_bar, text="Target").grid(row=3, column=0, padx=(0, 4), pady=(6, 0), sticky="w")
@@ -1071,6 +1089,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self._pan_bounds = None
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._populate_controls()
         self.schedule_draw()
 
@@ -1085,6 +1105,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self._annotations = []
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._right_label_positions = {}
         self._title_positions = {}
         self._draggables = []
@@ -1100,6 +1122,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self._series = []
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._view_bounds = None
         self._plot_rect = None
         self.canvas.delete("all")
@@ -1108,6 +1132,8 @@ class AverageValuesChartPanel(ttk.Frame):
     def clear_lspr_shift(self) -> None:
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._refresh_lspr_bar_target_options()
         self.draw_chart()
 
@@ -1127,6 +1153,8 @@ class AverageValuesChartPanel(ttk.Frame):
         self._hidden_time_ranges = self._merge_hidden_time_ranges(self._hidden_time_ranges)
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._refresh_lspr_bar_target_options()
         self._refresh_hidden_range_label()
         self.draw_chart()
@@ -1137,14 +1165,118 @@ class AverageValuesChartPanel(ttk.Frame):
         self.hide_end_var.set("")
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self._refresh_lspr_bar_target_options()
         self._refresh_hidden_range_label()
         self.draw_chart()
 
     def _on_running_buffer_change(self, _event=None) -> None:
-        self._lspr_shift_items = []
+        self._lspr_shift_items = self._pinned_lspr_items()
         self._lspr_bar_entries = []
         self._refresh_lspr_bar_target_options()
+        self.draw_chart()
+
+    def _pinned_lspr_items(self) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for group in self._pinned_lspr_groups:
+            group_items = group.get("items", [])
+            if not isinstance(group_items, list):
+                continue
+            items.extend([dict(item) for item in group_items if isinstance(item, dict)])
+        return items
+
+    def _current_lspr_items(self) -> list[dict[str, object]]:
+        return [dict(item) for item in self._lspr_shift_items if not item.get("pinned_group_id")]
+
+    def _set_lspr_display_items(self, current_items: list[dict[str, object]]) -> None:
+        self._lspr_shift_items = self._pinned_lspr_items() + [dict(item) for item in current_items]
+
+    def _sync_pinned_lspr_item_position(self, item: dict[str, object]) -> None:
+        group_id = item.get("pinned_group_id")
+        if not group_id:
+            return
+        for group in self._pinned_lspr_groups:
+            if group.get("id") != group_id:
+                continue
+            group_items = group.get("items", [])
+            if not isinstance(group_items, list):
+                return
+            for group_item in group_items:
+                if not isinstance(group_item, dict):
+                    continue
+                if group_item.get("kind") != item.get("kind"):
+                    continue
+                if group_item.get("series_name") != item.get("series_name"):
+                    continue
+                if group_item.get("from") == item.get("from") and group_item.get("to") == item.get("to"):
+                    group_item["label_px"] = item.get("label_px")
+                    group_item["label_py"] = item.get("label_py")
+                    return
+
+    def keep_lspr_shift_result(self) -> None:
+        current_items = self._current_lspr_items()
+        current_shifts = [item for item in current_items if item.get("kind") == "shift"]
+        if not current_shifts:
+            messagebox.showinfo("No Current LSPR", "Please calculate LSPR Shift first, then keep the displayed result.")
+            return
+
+        group_id = self._next_lspr_group_id
+        self._next_lspr_group_id += 1
+        label = self._last_lspr_result_label.strip() or f"LSPR Result {group_id}"
+        label = f"{group_id}. {label}"
+        pinned_items: list[dict[str, object]] = []
+        for item in current_items:
+            pinned_item = dict(item)
+            pinned_item["pinned_group_id"] = group_id
+            pinned_item["pinned_group_label"] = label
+            pinned_items.append(pinned_item)
+        self._pinned_lspr_groups.append({"id": group_id, "label": label, "items": pinned_items})
+        self._set_lspr_display_items([])
+        self.draw_chart()
+
+    def manage_lspr_shift_results(self) -> None:
+        if not self._pinned_lspr_groups:
+            messagebox.showinfo("No Kept LSPR", "No kept LSPR results to manage.")
+            return
+
+        window = tk.Toplevel(self)
+        window.title("Manage Kept LSPR")
+        window.transient(self.winfo_toplevel())
+        window.geometry("420x320")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+
+        listbox = tk.Listbox(window, selectmode=tk.EXTENDED, exportselection=False)
+        listbox.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 6))
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=listbox.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", pady=(10, 6))
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        for group in self._pinned_lspr_groups:
+            label = str(group.get("label", "LSPR Result"))
+            shift_count = sum(1 for item in group.get("items", []) if isinstance(item, dict) and item.get("kind") == "shift")
+            listbox.insert(tk.END, f"{label} ({shift_count} labels)")
+
+        buttons = ttk.Frame(window)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="e", padx=10, pady=(0, 10))
+
+        def delete_selected() -> None:
+            selected = set(listbox.curselection())
+            if not selected:
+                return
+            self._pinned_lspr_groups = [
+                group
+                for index, group in enumerate(self._pinned_lspr_groups)
+                if index not in selected
+            ]
+            current_items = self._current_lspr_items()
+            self._set_lspr_display_items(current_items)
+            self.draw_chart()
+            window.destroy()
+
+        ttk.Button(buttons, text="Delete Selected", command=delete_selected).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(buttons, text="Close", command=window.destroy).grid(row=0, column=1)
 
     def show_lspr_shift_bar_chart(self) -> None:
         entries = self._lspr_bar_entries or self._build_target_bar_entries()
@@ -1605,10 +1737,16 @@ class AverageValuesChartPanel(ttk.Frame):
             for index, name in enumerate(curve_names)
             if name in self._hidden_right_labels
         ]
+        hidden_legend_indexes = [
+            index
+            for index, name in enumerate(curve_names)
+            if name in self._hidden_legend_labels
+        ]
         return {
             "title": self.title_var.get(),
             "x_title": self.x_title_var.get(),
             "running_buffer": self.running_buffer_var.get(),
+            "running_buffer_compare": self.running_buffer_compare_var.get(),
             "lspr_font_size": self.lspr_font_size_var.get(),
             "chart_type": self.chart_type_var.get(),
             "line_width": self.line_width_var.get(),
@@ -1637,6 +1775,8 @@ class AverageValuesChartPanel(ttk.Frame):
             "series_widths": dict(self._series_widths),
             "hidden_right_labels": sorted(self._hidden_right_labels),
             "hidden_right_label_indexes": hidden_indexes,
+            "hidden_legend_labels": sorted(self._hidden_legend_labels),
+            "hidden_legend_label_indexes": hidden_legend_indexes,
             "legend_position": list(self._legend_position) if self._legend_position else None,
             "right_label_positions": {key: list(value) for key, value in self._right_label_positions.items()},
             "title_positions": {key: list(value) for key, value in self._title_positions.items()},
@@ -1647,6 +1787,7 @@ class AverageValuesChartPanel(ttk.Frame):
         self.title_var.set(str(preset.get("title", "")))
         self.x_title_var.set(str(preset.get("x_title", "Time [s]")))
         self.running_buffer_var.set(str(preset.get("running_buffer", "5*SSC")) or "5*SSC")
+        self.running_buffer_compare_var.set(str(preset.get("running_buffer_compare", "")))
         self.lspr_font_size_var.set(str(preset.get("lspr_font_size", "10")) or "10")
         self.y_title_var.set(self._locked_y_axis_title())
         self.chart_type_var.set(str(preset.get("chart_type", "line")))
@@ -1692,6 +1833,18 @@ class AverageValuesChartPanel(ttk.Frame):
                 if 0 <= index < len(current_curve_names):
                     hidden_names.add(current_curve_names[index])
         self._hidden_right_labels = hidden_names
+        hidden_legend_labels = preset.get("hidden_legend_labels", [])
+        hidden_legend_indexes = preset.get("hidden_legend_label_indexes", [])
+        hidden_legend_names = {str(name) for name in hidden_legend_labels} if isinstance(hidden_legend_labels, list) else set()
+        if isinstance(hidden_legend_indexes, list):
+            for raw_index in hidden_legend_indexes:
+                try:
+                    index = int(raw_index)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < len(current_curve_names):
+                    hidden_legend_names.add(current_curve_names[index])
+        self._hidden_legend_labels = hidden_legend_names
         legend_position = preset.get("legend_position")
         self._legend_position = self._point_tuple(legend_position)
         raw_positions = preset.get("right_label_positions", {})
@@ -1748,7 +1901,7 @@ class AverageValuesChartPanel(ttk.Frame):
         window = tk.Toplevel(self)
         window.title("Plot Settings")
         window.transient(self.winfo_toplevel())
-        window.geometry("760x520")
+        window.geometry("980x560")
         window.columnconfigure(0, weight=1)
         window.rowconfigure(0, weight=1)
 
@@ -1921,8 +2074,9 @@ class AverageValuesChartPanel(ttk.Frame):
 
         labels_tab.columnconfigure(0, weight=1)
         labels_tab.columnconfigure(2, weight=1)
+        labels_tab.columnconfigure(4, weight=1)
         ttk.Label(labels_tab, text="Right-side curve labels").grid(row=0, column=0, sticky="w")
-        right_label_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=10)
+        right_label_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=7)
         right_label_list.grid(row=1, column=0, sticky="nsew", pady=(4, 8), padx=(0, 8))
         labels_tab.rowconfigure(1, weight=1)
         for name in curve_names:
@@ -1933,38 +2087,103 @@ class AverageValuesChartPanel(ttk.Frame):
         right_buttons = ttk.Frame(labels_tab)
         right_buttons.grid(row=1, column=1, sticky="ns", padx=(0, 16))
 
+        def refresh_labels_tab() -> None:
+            self.draw_chart()
+            window.destroy()
+            self.open_plot_settings("Labels")
+
         def hide_selected_right_labels() -> None:
             for index in right_label_list.curselection():
                 if 0 <= index < len(curve_names):
                     self._hidden_right_labels.add(curve_names[index])
-            self.draw_chart()
-            window.destroy()
-            self.open_plot_settings("Labels")
+            refresh_labels_tab()
+
+        def show_selected_right_labels() -> None:
+            for index in right_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    self._hidden_right_labels.discard(curve_names[index])
+            refresh_labels_tab()
+
+        def toggle_selected_right_labels() -> None:
+            for index in right_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    name = curve_names[index]
+                    if name in self._hidden_right_labels:
+                        self._hidden_right_labels.discard(name)
+                    else:
+                        self._hidden_right_labels.add(name)
+            refresh_labels_tab()
 
         def show_all_right_labels() -> None:
             self._hidden_right_labels.clear()
-            self.draw_chart()
-            window.destroy()
-            self.open_plot_settings("Labels")
+            refresh_labels_tab()
 
         def hide_all_right_labels() -> None:
             self._hidden_right_labels = set(curve_names)
-            self.draw_chart()
-            window.destroy()
-            self.open_plot_settings("Labels")
+            refresh_labels_tab()
 
-        ttk.Button(right_buttons, text="Hide", command=hide_selected_right_labels, width=APP_BUTTON_WIDTH).grid(row=0, column=0, pady=(0, 6))
-        ttk.Button(right_buttons, text="Hide All", command=hide_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=1, column=0, pady=(0, 6))
-        ttk.Button(right_buttons, text="Show All", command=show_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=2, column=0)
+        ttk.Button(right_buttons, text="Hide Selected", command=hide_selected_right_labels, width=APP_BUTTON_WIDTH).grid(row=0, column=0, pady=(0, 6))
+        ttk.Button(right_buttons, text="Show Selected", command=show_selected_right_labels, width=APP_BUTTON_WIDTH).grid(row=1, column=0, pady=(0, 6))
+        ttk.Button(right_buttons, text="Toggle Selected", command=toggle_selected_right_labels, width=APP_BUTTON_WIDTH).grid(row=2, column=0, pady=(0, 6))
+        ttk.Button(right_buttons, text="Hide All", command=hide_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=3, column=0, pady=(10, 6))
+        ttk.Button(right_buttons, text="Show All", command=show_all_right_labels, width=APP_BUTTON_WIDTH).grid(row=4, column=0)
 
-        ttk.Label(labels_tab, text="Inserted text labels").grid(row=0, column=2, sticky="w")
+        ttk.Label(labels_tab, text="Legend labels").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        legend_label_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=7)
+        legend_label_list.grid(row=3, column=0, sticky="nsew", pady=(4, 8), padx=(0, 8))
+        labels_tab.rowconfigure(3, weight=1)
+        for name in curve_names:
+            label = self._series_labels.get(name, name)
+            state = "hidden" if name in self._hidden_legend_labels else "shown"
+            legend_label_list.insert(tk.END, f"{label}  [{state}]")
+
+        legend_buttons = ttk.Frame(labels_tab)
+        legend_buttons.grid(row=3, column=1, sticky="ns", padx=(0, 16))
+
+        def hide_selected_legend_labels() -> None:
+            for index in legend_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    self._hidden_legend_labels.add(curve_names[index])
+            refresh_labels_tab()
+
+        def show_selected_legend_labels() -> None:
+            for index in legend_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    self._hidden_legend_labels.discard(curve_names[index])
+            refresh_labels_tab()
+
+        def toggle_selected_legend_labels() -> None:
+            for index in legend_label_list.curselection():
+                if 0 <= index < len(curve_names):
+                    name = curve_names[index]
+                    if name in self._hidden_legend_labels:
+                        self._hidden_legend_labels.discard(name)
+                    else:
+                        self._hidden_legend_labels.add(name)
+            refresh_labels_tab()
+
+        def show_all_legend_labels() -> None:
+            self._hidden_legend_labels.clear()
+            refresh_labels_tab()
+
+        def hide_all_legend_labels() -> None:
+            self._hidden_legend_labels = set(curve_names)
+            refresh_labels_tab()
+
+        ttk.Button(legend_buttons, text="Hide Selected", command=hide_selected_legend_labels, width=APP_BUTTON_WIDTH).grid(row=0, column=0, pady=(0, 6))
+        ttk.Button(legend_buttons, text="Show Selected", command=show_selected_legend_labels, width=APP_BUTTON_WIDTH).grid(row=1, column=0, pady=(0, 6))
+        ttk.Button(legend_buttons, text="Toggle Selected", command=toggle_selected_legend_labels, width=APP_BUTTON_WIDTH).grid(row=2, column=0, pady=(0, 6))
+        ttk.Button(legend_buttons, text="Hide All", command=hide_all_legend_labels, width=APP_BUTTON_WIDTH).grid(row=3, column=0, pady=(10, 6))
+        ttk.Button(legend_buttons, text="Show All", command=show_all_legend_labels, width=APP_BUTTON_WIDTH).grid(row=4, column=0)
+
+        ttk.Label(labels_tab, text="Inserted text labels").grid(row=0, column=4, sticky="w")
         annotation_list = tk.Listbox(labels_tab, selectmode=tk.MULTIPLE, exportselection=False, height=10)
-        annotation_list.grid(row=1, column=2, sticky="nsew", pady=(4, 8))
+        annotation_list.grid(row=1, column=4, rowspan=3, sticky="nsew", pady=(4, 8))
         for annotation in self._annotations:
             text = str(annotation.get("text", "")).strip()
             annotation_list.insert(tk.END, text if text else "(empty)")
         annotation_buttons = ttk.Frame(labels_tab)
-        annotation_buttons.grid(row=2, column=2, sticky="w")
+        annotation_buttons.grid(row=4, column=4, sticky="w")
 
         def add_text_label() -> None:
             text = simpledialog.askstring("Add Plot Label", "Text:", parent=window)
@@ -2142,6 +2361,8 @@ class AverageValuesChartPanel(ttk.Frame):
     def _on_plot_selection_change(self, _event: object | None = None) -> None:
         self._lspr_shift_items = []
         self._lspr_bar_entries = []
+        self._pinned_lspr_groups = []
+        self._last_lspr_result_label = ""
         self.draw_chart()
 
     def _refresh_running_buffer_options(self) -> None:
@@ -2158,10 +2379,15 @@ class AverageValuesChartPanel(ttk.Frame):
             labels.append(display_label)
         if self.running_buffer_box is not None:
             self.running_buffer_box["values"] = labels
+        if self.running_buffer_compare_box is not None:
+            self.running_buffer_compare_box["values"] = ["", *labels]
         current = self.running_buffer_var.get().strip()
         if labels and (not current or not any(self._stage_label_matches(label, current) for label in labels)):
             preferred = next((label for label in labels if self._stage_label_matches(label, "5*SSC")), labels[0])
             self.running_buffer_var.set(preferred)
+        compare_current = self.running_buffer_compare_var.get().strip()
+        if compare_current and not any(self._stage_label_matches(label, compare_current) for label in labels):
+            self.running_buffer_compare_var.set("")
 
     def _refresh_target_stage_options(self) -> None:
         if self.target_stage_box is None:
@@ -2200,19 +2426,39 @@ class AverageValuesChartPanel(ttk.Frame):
         if not target_label:
             messagebox.showinfo("No Running Buffer", "Please select a List name in Running Buffer.")
             return
+        compare_label = self.running_buffer_compare_var.get().strip()
+        use_adjacent_pair = bool(compare_label) and self._normalize_stage_name(target_label) != self._normalize_stage_name(compare_label)
         items: list[dict[str, object]] = []
         for series_index, series in enumerate(self._series):
-            items.extend(self._calculate_lspr_shift_items(series, target_label, series_index, len(self._series)))
+            if use_adjacent_pair:
+                items.extend(
+                    self._calculate_adjacent_lspr_shift_items(
+                        series,
+                        target_label,
+                        compare_label,
+                        series_index,
+                        len(self._series),
+                    )
+                )
+            else:
+                items.extend(self._calculate_lspr_shift_items(series, target_label, series_index, len(self._series)))
         if not items:
+            target_description = f"{target_label} to {compare_label}" if use_adjacent_pair else target_label
             messagebox.showinfo(
                 "No LSPR Shift",
-                f"No usable {target_label} stages were found. Please confirm the background labels include this List name.",
+                f"No usable {target_description} stages were found. Please confirm the background labels include these List names.",
             )
             return
-        self._lspr_shift_items = items
-        self._lspr_bar_entries = self._build_target_bar_entries()
-        if not self._lspr_bar_entries:
-            self._lspr_bar_entries = self._build_all_target_bar_entries_by_transition()
+        if use_adjacent_pair:
+            self._last_lspr_result_label = f"{target_label} to {compare_label}"
+            self._lspr_bar_entries = self._build_bar_entries_from_shift_items(items, f"{target_label} to {compare_label}")
+        else:
+            self._last_lspr_result_label = target_label
+            self._lspr_shift_items = items
+            self._lspr_bar_entries = self._build_target_bar_entries()
+            if not self._lspr_bar_entries:
+                self._lspr_bar_entries = self._build_all_target_bar_entries_by_transition()
+        self._set_lspr_display_items(items)
         self._refresh_lspr_bar_target_options()
         self.draw_chart()
 
@@ -2250,7 +2496,8 @@ class AverageValuesChartPanel(ttk.Frame):
                 f"No usable left/right stages were found for {selected_label}.",
             )
             return
-        self._lspr_shift_items = target_items
+        self._last_lspr_result_label = selected_label
+        self._set_lspr_display_items(target_items)
         self._lspr_bar_entries = bar_entries
         self._refresh_lspr_bar_target_options()
         if bar_entries:
@@ -2412,6 +2659,141 @@ class AverageValuesChartPanel(ttk.Frame):
         values, _window_start, _window_end = self._stage_region_value_window(points, start, end)
         return values
 
+    def _build_bar_entries_from_shift_items(
+        self,
+        items: list[dict[str, object]],
+        target_label: str,
+    ) -> list[dict[str, object]]:
+        entries: list[dict[str, object]] = []
+        for item in items:
+            if item.get("kind") != "shift":
+                continue
+            try:
+                value = float(item.get("delta", 0.0))
+                error = float(item.get("error", 0.0))
+            except (TypeError, ValueError):
+                continue
+            entries.append(
+                {
+                    "target": str(item.get("target", target_label) or target_label),
+                    "target_color": str(item.get("target_color", "#dff4ff") or "#dff4ff"),
+                    "name": str(item.get("series_label") or item.get("series_name") or "LSPR Shift"),
+                    "value": value,
+                    "error": max(0.0, error),
+                    "color": str(item.get("series_color", "#f4bd82")),
+                }
+            )
+        return entries
+
+    def _calculate_adjacent_lspr_shift_items(
+        self,
+        series: PlotSeries,
+        first_label: str,
+        second_label: str,
+        series_index: int = 0,
+        series_count: int = 1,
+    ) -> list[dict[str, object]]:
+        points = self._points_for_lspr(series)
+        if not points:
+            return []
+
+        regions = sorted(
+            [
+                (float(start), float(end), str(label), str(color))
+                for start, end, label, color in self._stage_regions
+            ],
+            key=lambda region: (region[0], region[1]),
+        )
+        matching_pairs: list[tuple[int, tuple[float, float, str, str], tuple[float, float, str, str]]] = []
+        for index in range(len(regions) - 1):
+            first_region = regions[index]
+            second_region = regions[index + 1]
+            if self._stage_label_matches(first_region[2], first_label) and self._stage_label_matches(second_region[2], second_label):
+                matching_pairs.append((index, first_region, second_region))
+        if not matching_pairs:
+            return []
+
+        items: list[dict[str, object]] = []
+        y_span = max((max(y for _x, y in points) - min(y for _x, y in points)), 0.001)
+        label_offset = y_span * (0.04 + min(series_index, 8) * 0.025)
+        if series_count > 1 and series_index % 2:
+            label_offset *= -1
+
+        for pair_index, (_stage_index, first_region, second_region) in enumerate(matching_pairs, start=1):
+            first_start, first_end, first_name, first_color = first_region
+            second_start, second_end, second_name, second_color = second_region
+            first_values, first_window_start, first_window_end = self._stage_region_value_window(points, first_start, first_end)
+            second_values, second_window_start, second_window_end = self._stage_region_value_window(points, second_start, second_end)
+            if not first_values or not second_values:
+                continue
+
+            first_avg = sum(first_values) / len(first_values)
+            second_avg = sum(second_values) / len(second_values)
+            first_error = self._standard_error(first_values)
+            second_error = self._standard_error(second_values)
+            delta = second_avg - first_avg
+            delta_error = math.sqrt(first_error**2 + second_error**2)
+            first_index = pair_index * 2 - 1
+            second_index = pair_index * 2
+            pair_target = f"{first_name} to {second_name}"
+            pair_color = second_color or first_color or "#dff4ff"
+
+            items.append(
+                {
+                    "kind": "segment",
+                    "start": float(first_window_start),
+                    "end": float(first_window_end),
+                    "stage_start": float(first_start),
+                    "stage_end": float(first_end),
+                    "avg": float(first_avg),
+                    "error": float(first_error),
+                    "label": first_name,
+                    "index": first_index,
+                    "series_name": series.name,
+                    "series_label": series.label,
+                    "series_color": series.color,
+                    "series_index": series_index,
+                }
+            )
+            items.append(
+                {
+                    "kind": "segment",
+                    "start": float(second_window_start),
+                    "end": float(second_window_end),
+                    "stage_start": float(second_start),
+                    "stage_end": float(second_end),
+                    "avg": float(second_avg),
+                    "error": float(second_error),
+                    "label": second_name,
+                    "index": second_index,
+                    "series_name": series.name,
+                    "series_label": series.label,
+                    "series_color": series.color,
+                    "series_index": series_index,
+                }
+            )
+
+            label_x = (first_start + second_end) / 2
+            label_y = max(first_avg, second_avg) + (label_offset * (-1 if pair_index % 2 == 0 else 1))
+            items.append(
+                {
+                    "kind": "shift",
+                    "x": float(label_x),
+                    "y": float(label_y),
+                    "delta": float(delta),
+                    "error": float(delta_error),
+                    "from": first_index,
+                    "to": second_index,
+                    "series_name": series.name,
+                    "series_label": series.label,
+                    "series_color": series.color,
+                    "series_index": series_index,
+                    "target": pair_target,
+                    "target_color": pair_color,
+                }
+            )
+        return items
+
     def _calculate_lspr_shift_items(
         self,
         series: PlotSeries,
@@ -2570,9 +2952,7 @@ class AverageValuesChartPanel(ttk.Frame):
                     y = self._y_to_canvas(float(item["y"]), top, bottom, y_min, y_max)
                     x = max(left + 12, min(right - 12, x))
                 y = max(top + 18, min(bottom - 18, y))
-                delta = float(item["delta"])
-                series_label = str(item.get("series_label", "")).strip()
-                label = f"{series_label} Δλ={delta:+.3f}" if series_label else f"Δλ={delta:+.3f}"
+                label = self._lspr_shift_label_text(item)
                 tag = f"drag_lspr_label_{index}"
                 text_id = self._create_text_box(
                     x,
@@ -2582,6 +2962,15 @@ class AverageValuesChartPanel(ttk.Frame):
                     font=("Segoe UI", font_size, "bold"),
                 )
                 self._register_draggable("lspr_label", index, text_id, tag=tag)
+
+    def _lspr_shift_label_text(self, item: dict[str, object]) -> str:
+        delta = float(item["delta"])
+        series_label = str(item.get("series_label", "")).strip()
+        label = f"{series_label} Δλ={delta:+.3f}" if series_label else f"Δλ={delta:+.3f}"
+        group_id = item.get("pinned_group_id")
+        if group_id:
+            label = f"[{group_id}] {label}"
+        return label
 
     def _draw_lspr_sample_windows(
         self,
@@ -2642,12 +3031,7 @@ class AverageValuesChartPanel(ttk.Frame):
                 else:
                     x = x_to_px(float(item["x"]))
                     y = y_to_px(float(item["y"]))
-                series_label = str(item.get("series_label", "")).strip()
-                label = (
-                    f"{series_label} Δλ={float(item['delta']):+.3f}"
-                    if series_label
-                    else f"Δλ={float(item['delta']):+.3f}"
-                )
+                label = self._lspr_shift_label_text(item)
                 self._draw_export_boxed_text(draw, x, y, label, font, anchor="center")
 
     def _draw_export_lspr_sample_windows(
@@ -3086,6 +3470,8 @@ class AverageValuesChartPanel(ttk.Frame):
     def _draw_export_legend(self, draw, x: float, y: float, series: list[PlotSeries], title_font, item_font, scale: float) -> None:
         box = 18 * scale
         for item in series:
+            if item.name in self._hidden_legend_labels:
+                continue
             draw.rectangle((x, y + 4 * scale, x + box, y + 4 * scale + box), fill=item.color, outline=item.color)
             draw.text((x + 28 * scale, y + 3 * scale), item.label, fill="#222222", font=item_font)
             y += 30 * scale
@@ -3915,6 +4301,8 @@ class AverageValuesChartPanel(ttk.Frame):
     def _draw_legend(self, x: float, y: float, series: list[PlotSeries]) -> None:
         tag = "drag_legend"
         for item in series:
+            if item.name in self._hidden_legend_labels:
+                continue
             self.canvas.create_rectangle(x, y + 4, x + 16, y + 16, fill=item.color, outline=item.color, tags=(tag,))
             self.canvas.create_text(x + 22, y + 10, anchor="w", text=item.label, font=("Segoe UI", 9), fill="#222222", tags=(tag,))
             y += 24
@@ -4138,6 +4526,7 @@ class AverageValuesChartPanel(ttk.Frame):
             if 0 <= index < len(self._lspr_shift_items):
                 self._lspr_shift_items[index]["label_px"] = float(event_x + self._drag_offset[0])
                 self._lspr_shift_items[index]["label_py"] = float(event_y + self._drag_offset[1])
+                self._sync_pinned_lspr_item_position(self._lspr_shift_items[index])
         elif kind == "right_label":
             x, y = self._right_label_positions.get(str(key), self._draggable_position(self._drag_target))
             self._right_label_positions[str(key)] = (x + dx, y + dy)
@@ -4163,6 +4552,7 @@ class AverageValuesChartPanel(ttk.Frame):
             if 0 <= index < len(self._lspr_shift_items):
                 self._lspr_shift_items[index]["label_px"] = float(x)
                 self._lspr_shift_items[index]["label_py"] = float(y)
+                self._sync_pinned_lspr_item_position(self._lspr_shift_items[index])
         elif kind == "right_label":
             self._right_label_positions[str(key)] = (float(x), float(y))
         elif kind == "legend":
